@@ -23,7 +23,7 @@ cargo build --release
 ```shell
 sqz photo.jpg                            # 默认 q75，输出 photo.min.jpg
 sqz IMG_0001.HEIC -s 500KB               # 转成 JPEG，不超过 500KB
-sqz a.png b.jpg -q 90 -s 1MB -d out      # 质量不高于 90，且不超过 1MB
+sqz *.png *.jpg -q 90 -s 1MB -d out      # 质量不高于 90，且不超过 1MB
 sqz icon.png -q 100 -o icon.opt.png      # PNG 无损压缩
 sqz a.png b.heic -s 300KB --json         # 输出 JSON
 ```
@@ -32,14 +32,15 @@ sqz a.png b.heic -s 300KB --json         # 输出 JSON
 
 ## 规则
 
-- 输出格式跟随输入，HEIC 输出 JPEG。可以用 `-f` 指定，或由 `-o` 的扩展名决定。
-- 默认输出到原目录，文件名加 `.min`；用 `-d` 时不加后缀，`--suffix` 可以改。
-- JPEG 的 `-q` 和 mozjpeg 刻度接近。PNG 的 `-q` 是 imagequant 的质量，100 为无损。
-- `-s` 用二分搜索找质量，结果一定不超过上限。不给 `-q` 时，JPEG 从 95 开始试，PNG 从无损开始试。PNG 压不下去时会关掉抖动再试一次，除非指定了 `--dither`。
-- 达不到上限就不写文件，返回 1。加 `--best-effort` 会输出能压到的最小结果。
-- 同格式输出不比原图小时，保留原图。`--allow-larger` 可关闭这个行为。
-- 按 EXIF 方向旋转像素后丢弃 EXIF，保留 ICC，`--strip-icc` 可以去掉。
-- 不覆盖已有文件，除非加 `--overwrite`。多个输入写到同一个输出路径时直接报错。
+- 参数含 `*` 或 `?` 时由 sqz 自己展开，PowerShell 和 cmd 下也能用。Windows 上不区分大小写
+- 输出格式跟随输入，HEIC 输出 JPEG。可以用 `-f` 指定，或由 `-o` 的扩展名决定
+- 默认输出到原目录，文件名加 `.min`；用 `-d` 时不加后缀，`--suffix` 可以改
+- JPEG 的 `-q` 和 mozjpeg 刻度接近。PNG 的 `-q` 是 imagequant 的质量，100 为无损
+- `-s` 用二分搜索找质量，结果一定不超过上限。不给 `-q` 时，JPEG 从 95 开始试，PNG 从无损开始试。PNG 压不下去时会关掉抖动再试一次，除非指定了 `--dither`
+- 达不到上限就不写文件，返回 1。加 `--best-effort` 会输出能压到的最小结果
+- 同格式输出不比原图小时，保留原图。`--allow-larger` 可关闭这个行为
+- 按 EXIF 方向旋转像素后丢弃 EXIF，保留 ICC，`--strip-icc` 可以去掉
+- 不覆盖已有文件，除非加 `--overwrite`。多个输入写到同一个输出路径时直接报错
 
 ## JSON 输出
 
@@ -75,7 +76,7 @@ PNG 文件的写出部分是自己实现的。
 
 ## 限制
 
-- HEIC 只取主图的 8-bit 画面，HDR 增益图会丢弃。
-- HEIC 没有 ICC、只用 nclx 标注 Display P3 时，颜色会偏淡。
-- 16-bit PNG 会降为 8-bit。
-- 不保留 EXIF。
+- HEIC 只取主图的 8-bit 画面，HDR 增益图会丢弃
+- HEIC 没有 ICC、只用 nclx 标注 Display P3 时，颜色会偏淡
+- 16-bit PNG 会降为 8-bit
+- 不保留 EXIF

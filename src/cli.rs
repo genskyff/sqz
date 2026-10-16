@@ -10,7 +10,7 @@ use clap::{Parser, ValueEnum};
 #[derive(Debug, Parser)]
 #[command(name = "sqz", version)]
 pub struct Cli {
-    /// 输入文件，可传多个
+    /// 输入文件，可传多个，支持 * 和 ? 通配符
     #[arg(required = true)]
     pub inputs: Vec<PathBuf>,
 

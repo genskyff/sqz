@@ -4,7 +4,7 @@ mod jpeg;
 mod png;
 mod search;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -187,7 +187,8 @@ struct Plan {
 }
 
 fn main() -> ExitCode {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
+    cli.inputs = expand_inputs(&cli.inputs);
     if cli.output.is_some() && cli.inputs.len() > 1 {
         eprintln!("错误：-o 只能用于单个输入，多个输入请用 -d 指定输出目录");
         return ExitCode::from(2);
@@ -255,7 +256,46 @@ fn main() -> ExitCode {
     }
 }
 
+/// 参数含 `*` 或 `?` 且不是现有文件时按通配符展开（PowerShell 和 cmd 不替程序展开），
+/// 结果去重；没有匹配的模式原样保留，由后续步骤报错。
+fn expand_inputs(inputs: &[PathBuf]) -> Vec<PathBuf> {
+    let options = glob::MatchOptions {
+        case_sensitive: !cfg!(windows),
+        ..Default::default()
+    };
+    let mut seen = HashSet::new();
+    let mut expanded = Vec::new();
+    for input in inputs {
+        let matches: Vec<PathBuf> = if input.exists() || !is_pattern(input) {
+            vec![input.clone()]
+        } else {
+            glob::glob_with(&input.to_string_lossy(), options)
+                .into_iter()
+                .flatten()
+                .flatten()
+                .filter(|p| p.is_file())
+                .collect()
+        };
+        if matches.is_empty() {
+            expanded.push(input.clone());
+        }
+        for path in matches {
+            if seen.insert(path_key(&path)) {
+                expanded.push(path);
+            }
+        }
+    }
+    expanded
+}
+
+fn is_pattern(path: &Path) -> bool {
+    path.to_string_lossy().contains(['*', '?'])
+}
+
 fn plan(cli: &Cli, input: &Path) -> Result<Plan> {
+    if is_pattern(input) && !input.exists() {
+        bail!("通配符没有匹配到任何文件");
+    }
     let mut head = Vec::with_capacity(512);
     File::open(input)
         .context("无法打开文件")?
@@ -505,5 +545,36 @@ fn print_human(reports: &[Report]) {
             human_size(total_in),
             human_size(total_out)
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn expand_inputs_globs_and_dedupes() {
+        let dir = std::env::temp_dir().join(format!("sqz-glob-{}", std::process::id()));
+        // 名字像图片的目录不应被选中
+        fs::create_dir_all(dir.join("sub.png")).unwrap();
+        for name in ["a.png", "b.PNG", "c.jpg"] {
+            fs::write(dir.join(name), b"").unwrap();
+        }
+        let literal = dir.join("a.png");
+        let missing = dir.join("*.webp");
+        let got = expand_inputs(&[
+            literal.clone(),
+            dir.join("*.png"),
+            missing.clone(),
+            dir.join("c.jpg"),
+        ]);
+        fs::remove_dir_all(&dir).unwrap();
+
+        let mut expected = vec![literal];
+        if cfg!(windows) {
+            expected.push(dir.join("b.PNG"));
+        }
+        expected.extend([missing, dir.join("c.jpg")]);
+        assert_eq!(got, expected);
     }
 }
