@@ -24,6 +24,3 @@ strip = "debuginfo"
 lto = "thin"
 codegen-units = 1
 panic = "abort"
-
-[profile.dev.package."*"]
-opt-level = 3
