@@ -1,1 +1,3 @@
+mod search;
+
 fn main() {}
