@@ -1,0 +1,29 @@
+[package]
+name = "sqz"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "AGPL-3.0-only"
+
+[dependencies]
+anyhow = "1.0.104"
+clap = { version = "4.6.7", features = ["derive"] }
+crc32fast = "1.5.2"
+heic = { version = "0.1.6", features = ["parallel"] }
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
+imagequant = "4.4.1"
+miniz_oxide = "0.9.1"
+rayon = "1.12.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+zenjpeg = { version = "0.8.4", default-features = false, features = ["parallel", "yuv"] }
+
+[profile.release]
+debug = "line-tables-only"
+strip = "debuginfo"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+
+[profile.dev.package."*"]
+opt-level = 3
