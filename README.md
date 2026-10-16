@@ -1,6 +1,16 @@
 # sqz
 
-纯 Rust 的图片压缩命令行工具，输入 PNG / JPEG / HEIC，输出压缩后的 JPEG 或 PNG。可以按质量压缩，也可以给定大小上限、反推出不超限的最高质量。参数和默认值参考了 [Squoosh](https://github.com/GoogleChromeLabs/squoosh)。
+纯 Rust 实现的图片压缩工具。输入 PNG、JPEG、HEIC，输出 JPEG 或 PNG，可以指定质量，也可以只给文件大小上限，由工具反推质量。默认参数参考 [Squoosh](https://github.com/GoogleChromeLabs/squoosh)。
+
+## 安装
+
+从 [Releases](../../releases) 下载 Windows x64 版本，解压后把 `sqz.exe` 放进 `PATH`。
+
+也可以用 cargo 安装：
+
+```shell
+cargo install --git https://github.com/genskyff/sqz --locked
+```
 
 ## 构建
 
@@ -11,64 +21,61 @@ cargo build --release
 ## 用法
 
 ```shell
-# 按质量压缩（默认 q75），输出 photo.min.jpg
-sqz photo.jpg
-
-# HEIC 转 JPEG，大小不超过 500KB，自动反推质量
-sqz IMG_0001.HEIC -s 500KB
-
-# 质量上限 90，同时不超过 1MB；批量输出到 out/
-sqz *.png *.jpg -q 90 -s 1MB -d out
-
-# PNG 无损优化
-sqz icon.png -q 100 -o icon.opt.png
-
-# 给脚本或 agent 用：结果以 JSON 输出到 stdout
-sqz a.png b.heic -s 300KB -d out --json
+sqz photo.jpg                            # 默认 q75，输出 photo.min.jpg
+sqz IMG_0001.HEIC -s 500KB               # 转成 JPEG，不超过 500KB
+sqz a.png b.jpg -q 90 -s 1MB -d out      # 质量不高于 90，且不超过 1MB
+sqz icon.png -q 100 -o icon.opt.png      # PNG 无损压缩
+sqz a.png b.heic -s 300KB --json         # 输出 JSON
 ```
 
-完整参数见 `sqz --help`。
+其他参数见 `sqz --help`。
 
-## 行为约定
+## 规则
 
-- **输出格式**：默认 PNG→PNG，JPEG→JPEG，HEIC→JPEG；`-f jpeg|png` 强制指定；用 `-o` 时按扩展名推断。
-- **质量刻度**：JPEG 用 mozjpeg 刻度（`-q 75` 与 Squoosh 默认值的体积相近）；PNG 的 `-q` 是 imagequant 的目标质量，`-q 100` 表示无损。
-- **目标大小**：`-s` 在 `[--min-quality, 上限]` 区间内对整数质量二分，只采纳真正不超过上限的结果。上限取 `-q`，未给 `-q` 时 JPEG 为 95、PNG 为 100（先试无损）。PNG 开着抖动达不到上限时，会关掉抖动再搜一次（显式给了 `--dither` 则不会）。
-- **达不到上限**：默认不写文件、退出码为 1；加 `--best-effort` 则写出能做到的最小结果。
-- **不变大**：同格式输出不比原图小时，直接复制原图（`status: kept_original`）；加 `--allow-larger` 关闭此行为。
-- **元数据**：EXIF 方向会应用到像素上，然后丢弃全部 EXIF（包括 GPS）；ICC 色彩配置默认保留，`--strip-icc` 可去掉。
-- **安全**：默认不覆盖已有文件，原地覆盖输入也需要 `--overwrite`；多个输入写到同一输出路径时直接报错；先写临时文件再改名，不会留下写了一半的文件。
+- 输出格式跟随输入，HEIC 输出 JPEG。可以用 `-f` 指定，或由 `-o` 的扩展名决定。
+- 默认输出到原目录，文件名加 `.min`；用 `-d` 时不加后缀，`--suffix` 可以改。
+- JPEG 的 `-q` 和 mozjpeg 刻度接近。PNG 的 `-q` 是 imagequant 的质量，100 为无损。
+- `-s` 用二分搜索找质量，结果一定不超过上限。不给 `-q` 时，JPEG 从 95 开始试，PNG 从无损开始试。PNG 压不下去时会关掉抖动再试一次，除非指定了 `--dither`。
+- 达不到上限就不写文件，返回 1。加 `--best-effort` 会输出能压到的最小结果。
+- 同格式输出不比原图小时，保留原图。`--allow-larger` 可关闭这个行为。
+- 按 EXIF 方向旋转像素后丢弃 EXIF，保留 ICC，`--strip-icc` 可以去掉。
+- 不覆盖已有文件，除非加 `--overwrite`。多个输入写到同一个输出路径时直接报错。
 
 ## JSON 输出
 
-每个输入对应一项，没有值的字段不输出：
+`--json` 输出一个数组，每个输入一项，没有值的字段会省略：
 
 | 字段 | 说明 |
 |---|---|
-| `input` / `output` | 输入、输出路径 |
+| `input`、`output` | 路径 |
 | `status` | `ok`、`kept_original`、`best_effort`、`size_unreachable`、`error` |
-| `format` | 输出格式 `jpeg` / `png` |
-| `width` / `height` | 像素尺寸（已按 EXIF 方向旋转） |
-| `input_bytes` / `output_bytes` | 字节数；`size_unreachable` 时为能做到的最小值 |
-| `quality` / `dither` | 最终质量、PNG 抖动强度 |
+| `format` | `jpeg` 或 `png` |
+| `width`、`height` | 尺寸 |
+| `input_bytes`、`output_bytes` | 字节数 |
+| `quality`、`dither` | 最终使用的参数 |
 | `tries` | 编码次数 |
-| `error` | 错误说明 |
+| `error` | 错误信息 |
 | `elapsed_ms` | 耗时 |
 
-退出码：0 表示全部成功；1 表示有文件失败或达不到大小上限；2 表示参数错误。
+`size_unreachable` 时不写文件，`output_bytes` 是能压到的最小值。
 
-## 实现
+退出码：0 成功，1 有文件失败或达不到大小上限，2 参数错误。
 
-| 环节 | 依赖 |
+## 依赖
+
+| 用途 | crate |
 |---|---|
-| PNG/JPEG 解码 | `image`（png、zune-jpeg） |
+| PNG、JPEG 解码 | `image` |
 | HEIC 解码 | `heic` |
-| JPEG 编码 | `zenjpeg`（jpegli 的 Rust 移植） |
+| JPEG 编码 | `zenjpeg` |
 | PNG 量化 | `imagequant` |
-| PNG 写出 | 自己实现：色彩类型精简、调色板排序与位深缩减、滤波器试选，deflate 用 `miniz_oxide` |
+| deflate | `miniz_oxide` |
 
-## 已知限制
+PNG 文件的写出部分是自己实现的。
 
-- HEIC 只解码主图的 8-bit SDR 画面，HDR 增益图会丢弃。如果 HEIC 只用 nclx 标注 Display P3、不带 ICC，输出会按 sRGB 解读，颜色会偏淡。
+## 限制
+
+- HEIC 只取主图的 8-bit 画面，HDR 增益图会丢弃。
+- HEIC 没有 ICC、只用 nclx 标注 Display P3 时，颜色会偏淡。
 - 16-bit PNG 会降为 8-bit。
-- 不保留 EXIF（拍摄时间等）。
+- 不保留 EXIF。
