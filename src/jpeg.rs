@@ -56,8 +56,7 @@ impl<'a> JpegJob<'a> {
         } else {
             EncoderConfig::ycbcr(q, self.chroma)
         }
-        // zenjpeg 默认每 4 行 MCU 插 restart marker；规范允许，但部分解码器
-        // （如 Claude API）拒收带 restart marker 的渐进式 JPEG，mozjpeg 默认也不写
+        // zenjpeg 默认会写 restart marker，部分解码器（如 Claude API）拒收带它的渐进式 JPEG
         .restart_mcu_rows(0);
         let mut request = config.request();
         if let Some(icc) = self.icc {

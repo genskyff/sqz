@@ -62,7 +62,7 @@ impl<'a> PngJob<'a> {
         dither: f32,
         icc: Option<&'a [u8]>,
     ) -> Self {
-        // 全透明像素的 RGB 看不见，统一置零以利于压缩（同 oxipng 的 optimize_alpha）
+        // 全透明像素的 RGB 看不见，统一置零以利于压缩
         for p in rgba.as_chunks_mut::<4>().0 {
             if p[3] == 0 {
                 p[..3].fill(0);
@@ -84,7 +84,6 @@ impl<'a> PngJob<'a> {
         self.dither
     }
 
-    /// 抖动噪点会显著增大体积，关掉后同质量下文件小得多。
     pub fn disable_dither(&mut self) {
         self.dither = 0.0;
     }

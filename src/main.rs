@@ -107,7 +107,6 @@ impl Encoder<'_> {
         }
     }
 
-    /// PNG 有损输出所用的抖动强度。
     fn dither(&self) -> Option<f32> {
         match self {
             Encoder::Jpeg(_) => None,
@@ -115,7 +114,7 @@ impl Encoder<'_> {
         }
     }
 
-    /// 关掉 PNG 抖动以换取更小体积；返回是否真的有所改变。
+    /// 关掉 PNG 抖动；返回是否真的有所改变。
     fn drop_dither(&mut self) -> bool {
         match self {
             Encoder::Png(job) if job.dither() > 0.0 => {
