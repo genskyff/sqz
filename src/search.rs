@@ -20,9 +20,13 @@ pub enum Order {
     /// 上限走另一条编码路径（PNG 的 q100 是无损），它超限说明不了有损区间：上限失败后
     /// 先试下限，下限也超限就收工。`parallel` 时上限、次上限、下限在第一轮一起并行试
     SplitCeiling { parallel: bool },
-    /// 先试下限，超限就收工；可行时从小往大倍增，再在缺口里二分
+    /// 先试下限，超限就收工；可行时，下限体积离上限不到 `GALLOP_RATIO` 倍就从小往大
+    /// 倍增，否则直接二分
     Floor,
 }
+
+/// 上限不超过下限体积的这个倍数时，答案多半贴着下限，倍增比二分省。经验值，样本有限。
+const GALLOP_RATIO: f64 = 3.0;
 
 /// 在 [lo, hi] 中找输出不超过 `cap` 字节的最高质量。
 ///
@@ -58,8 +62,10 @@ pub fn fit_size(
     match order {
         Order::Floor => {
             // 下限都超限就到此为止，不去试更贵的高质量
-            if search.best.is_some() {
-                search.gallop(hi)?;
+            if let Some((_, data)) = &search.best {
+                if cap as f64 <= data.len() as f64 * GALLOP_RATIO {
+                    search.gallop(hi)?;
+                }
                 search.bisect(lo, hi)?;
             }
         }
@@ -275,9 +281,17 @@ mod tests {
 
     #[test]
     fn floor_gallops_when_cap_is_near_floor_size() {
-        // 倍增 2、4，再二分 3
+        // 下限 10 字节，上限 25 字节：比值 2.5，倍增 2、4，再二分 3
         let r = fit_size(1, 95, 25, Order::Floor, single).unwrap();
         assert_eq!((found(&r), r.tries), (Some(2), 4));
+    }
+
+    #[test]
+    fn floor_bisects_when_cap_is_far_from_floor_size() {
+        // 比值 55.5：直接二分，比倍增（12 次）省
+        let r = fit_size(1, 95, 555, Order::Floor, single).unwrap();
+        assert_eq!(found(&r), Some(55));
+        assert!(r.tries <= 8, "{} 次", r.tries);
     }
 
     #[test]
@@ -291,7 +305,7 @@ mod tests {
         for order in [Order::Ceiling, PARALLEL, SEQUENTIAL, Order::Floor] {
             let r = fit_size(1, 95, 555, order, single).unwrap();
             assert_eq!(found(&r), Some(55), "{order:?}");
-            assert!(r.tries <= 12, "{order:?}: {} 次", r.tries);
+            assert!(r.tries <= 10, "{order:?}: {} 次", r.tries);
         }
     }
 
