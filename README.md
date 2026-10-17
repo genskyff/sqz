@@ -70,7 +70,7 @@ sqz a.png b.heic -s 300KB --json         # 输出 JSON
 | HEIC 解码 | `heic` |
 | JPEG 编码 | `zenjpeg` |
 | PNG 量化 | `imagequant` |
-| deflate | `miniz_oxide` |
+| deflate | `flate2`（`zlib-rs` 后端） |
 
 PNG 文件的写出部分是自己实现的。
 

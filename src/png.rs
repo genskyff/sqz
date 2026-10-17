@@ -2,8 +2,10 @@ use std::cell::OnceCell;
 use std::collections::HashMap;
 
 use anyhow::{Result, anyhow};
-use miniz_oxide::deflate::compress_to_vec_zlib;
+use flate2::Compression;
+use flate2::write::ZlibEncoder;
 use rayon::prelude::*;
+use std::io::Write;
 
 use crate::decode::{icc_matches, is_gray, is_opaque};
 
@@ -14,8 +16,16 @@ pub enum Effort {
     Final,
 }
 
-const TRIAL_LEVEL: u8 = 6;
-const BEST_LEVEL: u8 = 10;
+/// 试探档位：用来比较滤波器和估算体积。更低的档位排序和最高档对不上，会挑错滤波器
+const PROBE_LEVEL: u8 = 6;
+const BEST_LEVEL: u8 = 9;
+
+/// PNG 的 IDAT、iCCP 都要求 zlib 包装（RFC 1950）。
+fn zlib(data: &[u8], level: u8) -> Vec<u8> {
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(u32::from(level)));
+    encoder.write_all(data).expect("写入内存不会失败");
+    encoder.finish().expect("zlib 压缩不会失败")
+}
 
 const COLOR_GRAY: u8 = 0;
 const COLOR_RGB: u8 = 2;
@@ -269,18 +279,13 @@ fn compress(raster: &Raster, effort: Effort) -> Vec<u8> {
     };
     let (best_filter, trial) = filters
         .par_iter()
-        .map(|&f| {
-            (
-                f,
-                compress_to_vec_zlib(&apply_filter(raster, f), TRIAL_LEVEL),
-            )
-        })
+        .map(|&f| (f, zlib(&apply_filter(raster, f), PROBE_LEVEL)))
         .min_by_key(|(_, z)| z.len())
         .expect("至少有一个滤波策略");
     match effort {
         Effort::Search => trial,
         Effort::Final => {
-            let best = compress_to_vec_zlib(&apply_filter(raster, best_filter), BEST_LEVEL);
+            let best = zlib(&apply_filter(raster, best_filter), BEST_LEVEL);
             if best.len() < trial.len() {
                 best
             } else {
@@ -378,7 +383,7 @@ fn assemble(raster: &Raster, width: u32, height: u32, idat: &[u8], icc: Option<&
     if let Some(icc) = icc.filter(|icc| icc_matches(icc, gray)) {
         // 配置名 + NUL + 压缩方式 0
         let mut iccp = b"ICC Profile\0\0".to_vec();
-        iccp.extend_from_slice(&compress_to_vec_zlib(icc, BEST_LEVEL));
+        iccp.extend_from_slice(&zlib(icc, BEST_LEVEL));
         write_chunk(&mut out, b"iCCP", &iccp);
     }
     if !raster.plte.is_empty() {

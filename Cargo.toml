@@ -9,11 +9,11 @@ license = "AGPL-3.0-only"
 anyhow = "1.0.104"
 clap = { version = "4.6.7", features = ["derive"] }
 crc32fast = "1.5.2"
+flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 glob = "0.3.4"
 heic = { version = "0.1.6", features = ["parallel"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 imagequant = "4.4.1"
-miniz_oxide = "0.9.1"
 rayon = "1.12.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.154"
