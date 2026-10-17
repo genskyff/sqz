@@ -10,6 +10,8 @@ pub enum Fit {
 pub struct SearchResult {
     pub fit: Fit,
     pub tries: u32,
+    /// 每次试探的 (质量, 估算体积)，按试探先后排列
+    pub probes: Vec<(u8, usize)>,
 }
 
 /// 第一轮怎么试，以及之后怎么在剩下的区间里找。
@@ -27,6 +29,9 @@ pub enum Order {
 
 /// 上限不超过下限体积的这个倍数时，答案多半贴着下限，倍增比二分省。经验值，样本有限。
 const GALLOP_RATIO: f64 = 3.0;
+
+/// 估算体积在上限的这个倍数以内，才值得用定稿档位复测。PNG 无损的估算比定稿大 15%–25%。
+const RETEST_MARGIN: f64 = 1.3;
 
 /// 在 [lo, hi] 中找输出不超过 `cap` 字节的最高质量。
 ///
@@ -102,6 +107,46 @@ pub fn climb(
     }
 }
 
+/// 按定稿档位从高到低复测 `top` 和 `top - 1`，返回第一个不超限的。
+///
+/// 体积随质量不一定单调（调色板图在低质量时抖动反而更大），估算又偏大，搜索可能把
+/// 最高的两个质量误判为超限，而 [`climb`] 从低处倍增爬不过中间的高峰。只测不低于
+/// `floor`、高于 `above`、且估算不超过 `cap × RETEST_MARGIN` 的质量；没试探过的
+/// 质量借用试探过的最近更高质量的估算。`encode` 应按定稿档位编码。
+pub fn retest_top(
+    top: u8,
+    floor: u8,
+    above: Option<u8>,
+    cap: u64,
+    probes: &[(u8, usize)],
+    mut encode: impl FnMut(u8) -> Result<Vec<u8>>,
+) -> Result<Option<(u8, Vec<u8>)>> {
+    let candidates = if top > floor {
+        vec![top, top - 1]
+    } else {
+        vec![top]
+    };
+    for q in candidates {
+        if q < floor || above.is_some_and(|a| q <= a) {
+            continue;
+        }
+        let estimate = probes
+            .iter()
+            .rev()
+            .filter(|(p, _)| *p >= q)
+            .min_by_key(|(p, _)| *p)
+            .map(|&(_, size)| size);
+        if estimate.is_none_or(|size| size as f64 > cap as f64 * RETEST_MARGIN) {
+            continue;
+        }
+        let data = encode(q)?;
+        if data.len() as u64 <= cap {
+            return Ok(Some((q, data)));
+        }
+    }
+    Ok(None)
+}
+
 type Sample = (u8, Vec<u8>);
 
 /// 搜索过程中已知的两条边界。
@@ -109,6 +154,7 @@ struct Search<'a> {
     encode: &'a mut dyn FnMut(u8) -> Result<Vec<u8>>,
     cap: u64,
     tries: u32,
+    probes: Vec<(u8, usize)>,
     /// 不超限的最高质量
     best: Option<Sample>,
     /// 超限的最低质量
@@ -121,12 +167,14 @@ impl<'a> Search<'a> {
             encode,
             cap,
             tries: 0,
+            probes: Vec::new(),
             best: None,
             fail: None,
         }
     }
 
     fn record(&mut self, q: u8, data: Vec<u8>) -> bool {
+        self.probes.push((q, data.len()));
         let fits = data.len() as u64 <= self.cap;
         if fits {
             if self.best.as_ref().is_none_or(|(b, _)| q > *b) {
@@ -196,6 +244,7 @@ impl<'a> Search<'a> {
         SearchResult {
             fit,
             tries: self.tries,
+            probes: self.probes,
         }
     }
 }
@@ -366,6 +415,13 @@ mod tests {
     }
 
     #[test]
+    fn probes_record_every_try() {
+        let r = fit_size(1, 95, 555, Order::Ceiling, single).unwrap();
+        assert_eq!(r.probes.len() as u32, r.tries);
+        assert_eq!(r.probes[0], (95, 950));
+    }
+
+    #[test]
     fn climb_finds_higher_quality_that_fits() {
         let (q, data, tries) = climb(40, linear(40), 95, 555, |q| Ok(linear(q))).unwrap();
         assert_eq!((q, data.len()), (55, 550));
@@ -380,5 +436,89 @@ mod tests {
         assert!(tries <= 3);
         let (q, _, tries) = climb(95, linear(95), 95, 10_000, |q| Ok(linear(q))).unwrap();
         assert_eq!((q, tries), (95, 0));
+    }
+
+    /// 仿调色板截图的定稿体积：低质量颜色少、高质量颜色全，中间反而最大
+    fn u_final(q: u8) -> Vec<u8> {
+        let size = match q {
+            0..=3 => 6_788,
+            4..=97 => 7_400,
+            98..=99 => 7_160,
+            _ => 7_172,
+        };
+        vec![0; size]
+    }
+
+    /// 搜索时的估算体积，比定稿大 20%
+    fn u_estimate(qs: &[u8]) -> Result<Vec<Vec<u8>>> {
+        Ok(qs
+            .iter()
+            .map(|&q| vec![0; u_final(q).len() * 6 / 5])
+            .collect())
+    }
+
+    #[test]
+    fn retest_reaches_top_candidate_misjudged_by_estimate() {
+        // 估算全部超限；定稿后 q1 放得下，但往上爬会撞上中间的高峰，必须靠复测拿到 q99
+        let cap = 7_168;
+        let r = fit_size(1, 100, cap, PARALLEL, u_estimate).unwrap();
+        let Fit::Unreachable { quality, .. } = r.fit else {
+            panic!("按估算应判为达不到");
+        };
+        assert_eq!(quality, 1);
+        let (q, _, _) = climb(1, u_final(1), 99, cap, |q| Ok(u_final(q))).unwrap();
+        assert_eq!(q, 3, "倍增在 q4 撞上高峰就停");
+
+        let mut tries = 0;
+        let hit = retest_top(100, 1, Some(q), cap, &r.probes, |q| {
+            tries += 1;
+            Ok(u_final(q))
+        })
+        .unwrap();
+        assert_eq!(hit.map(|(q, d)| (q, d.len())), Some((99, 7_160)));
+        assert_eq!(tries, 2, "先测 q100（7172 超限）再测 q99");
+    }
+
+    #[test]
+    fn retest_prefers_lossless_when_it_fits() {
+        let probes = [(100, 8_606), (99, 8_592)];
+        let hit = retest_top(100, 1, Some(99), 7_680, &probes, |q| Ok(u_final(q))).unwrap();
+        assert_eq!(hit.map(|(q, _)| q), Some(100));
+    }
+
+    #[test]
+    fn retest_skips_estimates_far_above_cap() {
+        let probes = [(100, 50_000), (99, 20_000)];
+        let hit = retest_top(100, 1, None, 7_168, &probes, |_| -> Result<Vec<u8>> {
+            panic!("估算远超上限，不该编码")
+        })
+        .unwrap();
+        assert!(hit.is_none());
+    }
+
+    #[test]
+    fn retest_borrows_estimate_for_untested_quality() {
+        // 不并行时 q99 可能没试过，借用 q100 的估算
+        let probes = [(100, 8_606), (1, 8_146)];
+        let mut tested = Vec::new();
+        let hit = retest_top(100, 1, None, 7_168, &probes, |q| {
+            tested.push(q);
+            Ok(u_final(q))
+        })
+        .unwrap();
+        assert_eq!(tested, [100, 99]);
+        assert_eq!(hit.map(|(q, _)| q), Some(99));
+    }
+
+    #[test]
+    fn retest_respects_floor_and_above() {
+        let probes = [(100, 7_000)];
+        let hit = retest_top(100, 100, None, 7_168, &probes, |q| Ok(u_final(q))).unwrap();
+        assert!(hit.is_none(), "下限 100 时不测 q99，q100 本身 7172 超限");
+        let hit = retest_top(100, 1, Some(100), 10_000, &probes, |_| -> Result<Vec<u8>> {
+            panic!("已经是最高质量，不该复测")
+        })
+        .unwrap();
+        assert!(hit.is_none());
     }
 }

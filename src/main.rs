@@ -20,7 +20,7 @@ use cli::{Cli, FormatArg};
 use decode::InputFormat;
 use jpeg::JpegJob;
 use png::{Effort, PngJob};
-use search::{Fit, Order, climb, fit_size};
+use search::{Fit, Order, climb, fit_size, retest_top};
 
 const DEFAULT_QUALITY: u8 = 75;
 
@@ -429,6 +429,7 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
             let mut result = fit_size(min_quality, ceiling, cap, order, |qs| {
                 search_encode(&encoder, qs, parallel)
             })?;
+            let mut probes = std::mem::take(&mut result.probes);
             // 抖动噪点让 PNG 很难再变小：未指定 --dither 时，达不到上限就关掉抖动再搜一次。
             // 无损和抖动无关，所以重试的上限是 99
             let ditherless_ceiling = ceiling.min(99);
@@ -442,6 +443,7 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
                 })?;
                 result.tries += retry.tries;
                 result.fit = retry.fit;
+                probes.extend(retry.probes);
                 search_ceiling = ditherless_ceiling;
             }
             report.tries = result.tries;
@@ -456,14 +458,38 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
             // 搜索用快速档位估算，体积偏大；是否达标以定稿体积为准
             let searched_len = searched.len();
             let mut data = encoder.refine(quality, searched)?;
-            let fits = data.len() as u64 <= cap;
-            // 定稿比估算小，更高的质量也可能放得下，往上补测
-            if fits && data.len() < searched_len {
-                let (q, d, tries) = climb(quality, data, search_ceiling, cap, |q| {
-                    encoder.encode(q, Effort::Final)
-                })?;
-                (quality, data) = (q, d);
-                report.tries += tries;
+            let mut fits = data.len() as u64 <= cap;
+            // JPEG 的估算就是定稿体积，不必复测
+            let mut top = None;
+            if is_png {
+                let mut retests = 0;
+                top = retest_top(
+                    ceiling,
+                    min_quality,
+                    fits.then_some(quality),
+                    cap,
+                    &probes,
+                    |q| {
+                        retests += 1;
+                        encoder.encode(q, Effort::Final)
+                    },
+                )?;
+                report.tries += retests;
+            }
+            match top {
+                Some((q, d)) => {
+                    (quality, data) = (q, d);
+                    fits = true;
+                }
+                // 定稿比估算小，更高的质量也可能放得下；无损已由复测决定，只在有损区间里爬
+                None if fits && data.len() < searched_len => {
+                    let (q, d, tries) = climb(quality, data, search_ceiling.min(99), cap, |q| {
+                        encoder.encode(q, Effort::Final)
+                    })?;
+                    (quality, data) = (q, d);
+                    report.tries += tries;
+                }
+                None => {}
             }
             let status = if fits {
                 Status::Ok
