@@ -1,5 +1,5 @@
-use std::cell::OnceCell;
 use std::collections::HashMap;
+use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Result, anyhow};
 use flate2::Compression;
@@ -33,12 +33,21 @@ const COLOR_INDEXED: u8 = 3;
 const COLOR_GRAY_ALPHA: u8 = 4;
 const COLOR_RGBA: u8 = 6;
 
-/// 准备好的 PNG 编码输入，可按不同质量重复编码。
+/// 一次量化的结果，供定稿时复用：搜索最后试的质量往往就是要定稿的质量。
+struct Quantized {
+    quality: u8,
+    dither: f32,
+    palette: Vec<[u8; 4]>,
+    indices: Vec<u8>,
+}
+
+/// 准备好的 PNG 编码输入，可按不同质量重复编码。可跨线程共享，搜索时并行试探。
 pub struct PngJob<'a> {
     width: u32,
     height: u32,
     rgba: Vec<u8>,
-    quant_pixels: OnceCell<Vec<imagequant::RGBA>>,
+    quant_pixels: OnceLock<Vec<imagequant::RGBA>>,
+    last_quantized: Mutex<Option<Arc<Quantized>>>,
     icc: Option<&'a [u8]>,
     max_colors: u32,
     dither: f32,
@@ -63,7 +72,8 @@ impl<'a> PngJob<'a> {
             width,
             height,
             rgba,
-            quant_pixels: OnceCell::new(),
+            quant_pixels: OnceLock::new(),
+            last_quantized: Mutex::new(None),
             icc,
             max_colors,
             dither,
@@ -85,6 +95,36 @@ impl<'a> PngJob<'a> {
         if quality >= 100 {
             return Ok(self.lossless(effort));
         }
+        // 抖动会在量化时烧进索引，缓存必须按（质量, 抖动）匹配。
+        // 用 Arc 把结果带出锁，压缩期间不占锁，几个试探可以并行跑。
+        let cached = {
+            let last = self
+                .last_quantized
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            last.as_ref()
+                .filter(|q| q.quality == quality && q.dither == self.dither)
+                .map(Arc::clone)
+        };
+        let quantized = match cached {
+            Some(quantized) => quantized,
+            None => {
+                let quantized = Arc::new(self.quantize(quality)?);
+                let mut last = self
+                    .last_quantized
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
+                *last = Some(Arc::clone(&quantized));
+                quantized
+            }
+        };
+        let raster = Raster::indexed(&quantized.palette, &quantized.indices, self.width);
+        // 调色板数据小，最高档也不慢；直接用它，搜索时量到的就是最终体积
+        let idat = compress(&raster, Effort::Final);
+        Ok(assemble(&raster, self.width, self.height, &idat, self.icc))
+    }
+
+    fn quantize(&self, quality: u8) -> Result<Quantized> {
         let pixels = self.quant_pixels.get_or_init(|| {
             self.rgba
                 .as_chunks::<4>()
@@ -103,12 +143,12 @@ impl<'a> PngJob<'a> {
         let mut result = attr.quantize(&mut image).map_err(quant_err)?;
         result.set_dithering_level(self.dither).map_err(quant_err)?;
         let (palette, indices) = result.remapped(&mut image).map_err(quant_err)?;
-        let palette: Vec<[u8; 4]> = palette.iter().map(|c| [c.r, c.g, c.b, c.a]).collect();
-
-        let raster = Raster::indexed(&palette, &indices, self.width);
-        // 调色板数据小，最高档也不慢；直接用它，搜索时量到的就是最终体积
-        let idat = compress(&raster, Effort::Final);
-        Ok(assemble(&raster, self.width, self.height, &idat, self.icc))
+        Ok(Quantized {
+            quality,
+            dither: self.dither,
+            palette: palette.iter().map(|c| [c.r, c.g, c.b, c.a]).collect(),
+            indices,
+        })
     }
 
     fn lossless(&self, effort: Effort) -> Vec<u8> {
@@ -456,5 +496,19 @@ mod tests {
         let out = decode(&png).unwrap();
         let distinct: std::collections::HashSet<_> = out.rgba.as_chunks::<4>().0.iter().collect();
         assert!(distinct.len() <= 16);
+    }
+
+    #[test]
+    fn dither_off_recomputes_quantization() {
+        // 抖动烧进了索引，关掉抖动后不能复用之前的量化结果
+        let src = gradient(64, 64);
+        let mut job = PngJob::new(64, 64, src.clone(), 256, 1.0, None);
+        job.encode(50, Effort::Final).unwrap();
+        job.disable_dither();
+        let after = job.encode(50, Effort::Final).unwrap();
+        let fresh = PngJob::new(64, 64, src, 256, 0.0, None)
+            .encode(50, Effort::Final)
+            .unwrap();
+        assert_eq!(after, fresh);
     }
 }
