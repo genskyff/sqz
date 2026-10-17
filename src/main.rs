@@ -20,7 +20,7 @@ use cli::{Cli, FormatArg};
 use decode::InputFormat;
 use jpeg::JpegJob;
 use png::{Effort, PngJob};
-use search::{Fit, fit_size};
+use search::{Fit, Order, climb, fit_size};
 
 const DEFAULT_QUALITY: u8 = 75;
 
@@ -82,10 +82,10 @@ impl Encoder<'_> {
         }
     }
 
-    /// PNG 无损搜索时用的是较快档位，定稿再用最高档重压并取更小者，因此不会超出上限。
+    /// PNG 搜索时用的是快速档位，定稿再用最高档重压并取更小者，因此不会超出上限。
     fn refine(&self, quality: u8, searched: Vec<u8>) -> Result<Vec<u8>> {
         match self {
-            Encoder::Png(job) if quality >= 100 => {
+            Encoder::Png(job) => {
                 let refined = job.encode(quality, Effort::Final)?;
                 Ok(if refined.len() < searched.len() {
                     refined
@@ -93,7 +93,7 @@ impl Encoder<'_> {
                     searched
                 })
             }
-            _ => Ok(searched),
+            Encoder::Jpeg(_) => Ok(searched),
         }
     }
 
@@ -357,6 +357,22 @@ fn output_path(cli: &Cli, input: &Path, format: OutputFormat) -> PathBuf {
     dir.join(format!("{stem}{suffix}.{ext}"))
 }
 
+fn search_encode(encoder: &Encoder, qualities: &[u8], parallel: bool) -> Result<Vec<Vec<u8>>> {
+    if let [q] = qualities {
+        return Ok(vec![encoder.encode(*q, Effort::Search)?]);
+    }
+    if parallel {
+        return qualities
+            .par_iter()
+            .map(|&q| encoder.encode(q, Effort::Search))
+            .collect();
+    }
+    qualities
+        .iter()
+        .map(|&q| encoder.encode(q, Effort::Search))
+        .collect()
+}
+
 fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<()> {
     let original = fs::read(input).context("读取失败")?;
     report.input_bytes = Some(original.len() as u64);
@@ -394,40 +410,78 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
         }
         Some(cap) => {
             let ceiling = cli.quality.unwrap_or(plan.format.size_mode_ceiling());
-            let mut result = fit_size(cli.min_quality, ceiling, cap, |q| {
-                encoder.encode(q, Effort::Search)
+            let min_quality = cli.min_quality;
+            let is_png = matches!(plan.format, OutputFormat::Png);
+            // PNG 的 q100 走无损路径，和有损区间是两条体积曲线
+            let split = is_png && ceiling >= 100;
+            // 并行试探每个都要额外占一份量化内存；多文件时文件本身已经占满线程，
+            // 大图也容易把内存顶高，这两种情况退回逐个试探。
+            let parallel = split
+                && cli.inputs.len() == 1
+                && u64::from(width) * u64::from(height) <= 16_000_000
+                && rayon::current_num_threads() >= 3;
+            let order = if split {
+                Order::SplitCeiling { parallel }
+            } else {
+                Order::Ceiling
+            };
+            let mut search_ceiling = ceiling;
+            let mut result = fit_size(min_quality, ceiling, cap, order, |qs| {
+                search_encode(&encoder, qs, parallel)
             })?;
-            // 抖动噪点让 PNG 很难再变小：未指定 --dither 时，达不到上限就关掉抖动再搜一次
+            // 抖动噪点让 PNG 很难再变小：未指定 --dither 时，达不到上限就关掉抖动再搜一次。
+            // 无损和抖动无关，所以重试的上限是 99
+            let ditherless_ceiling = ceiling.min(99);
             if matches!(result.fit, Fit::Unreachable { .. })
                 && cli.dither.is_none()
+                && ditherless_ceiling >= min_quality
                 && encoder.drop_dither()
             {
-                let retry = fit_size(cli.min_quality, ceiling.min(99), cap, |q| {
-                    encoder.encode(q, Effort::Search)
+                let retry = fit_size(min_quality, ditherless_ceiling, cap, Order::Floor, |qs| {
+                    search_encode(&encoder, qs, false)
                 })?;
                 result.tries += retry.tries;
                 result.fit = retry.fit;
+                search_ceiling = ditherless_ceiling;
             }
             report.tries = result.tries;
-            let (quality, data, status) = match result.fit {
-                Fit::Found { quality, data } => (quality, data, Status::Ok),
-                Fit::Unreachable { quality, data } if cli.best_effort => {
-                    (quality, data, Status::BestEffort)
-                }
-                Fit::Unreachable { quality, data } => {
-                    report.status = Status::SizeUnreachable;
-                    report.quality = Some(quality);
-                    report.dither = encoder.dither().filter(|_| quality < 100);
-                    report.output_bytes = Some(data.len() as u64);
-                    bail!(
-                        "质量降到 {quality} 仍有 {}，超过上限 {}（可降低 --min-quality，或加 --best-effort 写出最小结果）",
-                        human_size(data.len() as u64),
-                        human_size(cap)
-                    );
-                }
+            let (Fit::Found {
+                mut quality,
+                data: searched,
+            }
+            | Fit::Unreachable {
+                mut quality,
+                data: searched,
+            }) = result.fit;
+            // 搜索用快速档位估算，体积偏大；是否达标以定稿体积为准
+            let searched_len = searched.len();
+            let mut data = encoder.refine(quality, searched)?;
+            let fits = data.len() as u64 <= cap;
+            // 定稿比估算小，更高的质量也可能放得下，往上补测
+            if fits && data.len() < searched_len {
+                let (q, d, tries) = climb(quality, data, search_ceiling, cap, |q| {
+                    encoder.encode(q, Effort::Final)
+                })?;
+                (quality, data) = (q, d);
+                report.tries += tries;
+            }
+            let status = if fits {
+                Status::Ok
+            } else if cli.best_effort {
+                Status::BestEffort
+            } else {
+                report.status = Status::SizeUnreachable;
+                report.quality = Some(quality);
+                report.dither = encoder.dither().filter(|_| quality < 100);
+                report.output_bytes = Some(data.len() as u64);
+                bail!(
+                    "质量降到 {quality} 仍有 {}，超过上限 {}（可降低 --min-quality，或加 --best-effort 写出最小结果）",
+                    human_size(data.len() as u64),
+                    human_size(cap)
+                );
             };
             report.quality = Some(quality);
-            (encoder.refine(quality, data)?, status)
+            (data, status)
         }
     };
     if report.quality.is_some_and(|q| q < 100) {

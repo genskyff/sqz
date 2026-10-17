@@ -9,7 +9,7 @@ use std::io::Write;
 
 use crate::decode::{icc_matches, is_gray, is_opaque};
 
-/// 无损搜索时用较快的 deflate 档位估算，定稿时再用最高档压一遍。
+/// 搜索时用较快的 deflate 档位估算，定稿时再用最高档压一遍并取更小者。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effort {
     Search,
@@ -90,7 +90,7 @@ impl<'a> PngJob<'a> {
     }
 
     /// quality 为 100 时无损，否则用 imagequant 量化为调色板图。
-    /// `effort` 只影响无损路径：真彩色数据大，搜索时先用快档估算。
+    /// `effort` 决定 deflate 档位：搜索时用快档估算体积，定稿时用最高档。
     pub fn encode(&self, quality: u8, effort: Effort) -> Result<Vec<u8>> {
         if quality >= 100 {
             return Ok(self.lossless(effort));
@@ -119,8 +119,7 @@ impl<'a> PngJob<'a> {
             }
         };
         let raster = Raster::indexed(&quantized.palette, &quantized.indices, self.width);
-        // 调色板数据小，最高档也不慢；直接用它，搜索时量到的就是最终体积
-        let idat = compress(&raster, Effort::Final);
+        let idat = compress(&raster, effort);
         Ok(assemble(&raster, self.width, self.height, &idat, self.icc))
     }
 
