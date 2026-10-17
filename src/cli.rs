@@ -38,9 +38,9 @@ pub struct Cli {
     #[arg(short = 's', long, value_parser = parse_size)]
     pub max_size: Option<u64>,
 
-    /// --max-size 搜索的质量下限
-    #[arg(long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(0..=100))]
-    pub min_quality: u8,
+    /// --max-size 搜索的质量下限，默认 JPEG 1、PNG 30。PNG 降质靠减少颜色，低于 30 时颜色会严重失真
+    #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
+    pub min_quality: Option<u8>,
 
     /// 达不到 --max-size 时仍写出能做到的最小结果（默认不写并报错）
     #[arg(long)]

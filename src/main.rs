@@ -24,6 +24,8 @@ use search::{Fit, Order, climb, fit_size, retest_top};
 
 const DEFAULT_QUALITY: u8 = 75;
 
+const PNG_JPEG_HINT: &str = "PNG 降质只会减少颜色，照片类图片可改用 -f jpeg";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputFormat {
     Jpeg,
@@ -65,6 +67,14 @@ impl OutputFormat {
         match self {
             OutputFormat::Jpeg => 95,
             OutputFormat::Png => 100,
+        }
+    }
+
+    /// 未给 --min-quality 时的质量下限：PNG 降质靠减少颜色，低于 30 时只剩几种颜色
+    fn size_mode_floor(self) -> u8 {
+        match self {
+            OutputFormat::Jpeg => 1,
+            OutputFormat::Png => 30,
         }
     }
 }
@@ -410,7 +420,11 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
         }
         Some(cap) => {
             let ceiling = cli.quality.unwrap_or(plan.format.size_mode_ceiling());
-            let min_quality = cli.min_quality;
+            // 下限不能高于上限，否则显式给的低 -q 会被默认下限顶掉，关抖动重试也会被跳过
+            let min_quality = cli
+                .min_quality
+                .unwrap_or(plan.format.size_mode_floor())
+                .min(ceiling);
             let is_png = matches!(plan.format, OutputFormat::Png);
             // PNG 的 q100 走无损路径，和有损区间是两条体积曲线
             let split = is_png && ceiling >= 100;
@@ -500,8 +514,13 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
                 report.quality = Some(quality);
                 report.dither = encoder.dither().filter(|_| quality < 100);
                 report.output_bytes = Some(data.len() as u64);
+                let hint = if is_png {
+                    PNG_JPEG_HINT
+                } else {
+                    "可降低 --min-quality"
+                };
                 bail!(
-                    "质量降到 {quality} 仍有 {}，超过上限 {}（可降低 --min-quality，或加 --best-effort 写出最小结果）",
+                    "质量降到 {quality} 仍有 {}，超过上限 {}（{hint}，或加 --best-effort 写出最小结果）",
                     human_size(data.len() as u64),
                     human_size(cap)
                 );
@@ -605,6 +624,9 @@ fn print_human(reports: &[Report]) {
                 }
                 match r.status {
                     Status::KeptOriginal => line.push_str("  （压缩后不更小，保留原图）"),
+                    Status::BestEffort if r.format == Some("png") => line.push_str(&format!(
+                        "  （未达到大小上限，已写出最小结果；{PNG_JPEG_HINT}）"
+                    )),
                     Status::BestEffort => line.push_str("  （未达到大小上限，已写出最小结果）"),
                     _ => {}
                 }
