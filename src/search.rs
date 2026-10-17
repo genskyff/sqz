@@ -17,8 +17,8 @@ pub struct SearchResult {
 pub enum Order {
     /// 先试上限，失败后在下面二分。适合体积随质量大致单调的编码，如 JPEG
     Ceiling,
-    /// 上限走另一条编码路径（PNG 的 q100 是无损）。`parallel` 时上限、次上限、下限在第一轮
-    /// 一起并行试，否则同 `Ceiling`
+    /// 上限走另一条编码路径（PNG 的 q100 是无损），它超限说明不了有损区间：上限失败后
+    /// 先试下限，下限也超限就收工。`parallel` 时上限、次上限、下限在第一轮一起并行试
     SplitCeiling { parallel: bool },
     /// 先试下限，超限就收工；可行时从小往大倍增，再在缺口里二分
     Floor,
@@ -63,7 +63,13 @@ pub fn fit_size(
                 search.bisect(lo, hi)?;
             }
         }
-        Order::Ceiling | Order::SplitCeiling { .. } => search.bisect(lo, hi)?,
+        Order::SplitCeiling { parallel: false } => {
+            let floor_fails = search.best.is_none() && lo < hi && !search.probe(lo)?;
+            if !floor_fails {
+                search.bisect(lo, hi)?;
+            }
+        }
+        Order::Ceiling | Order::SplitCeiling { parallel: true } => search.bisect(lo, hi)?,
     }
     Ok(search.finish())
 }
@@ -244,6 +250,20 @@ mod tests {
         assert_eq!((found(&r), r.tries), (Some(51), 2));
         let r = fit_size(50, 50, 5, SEQUENTIAL, single).unwrap();
         assert_eq!((found(&r), r.tries), (None, 1));
+    }
+
+    #[test]
+    fn sequential_split_stops_when_floor_fails() {
+        let r = fit_size(1, 100, 5, SEQUENTIAL, single).unwrap();
+        assert_eq!((found(&r), r.tries, size_of(&r)), (None, 2, 10));
+    }
+
+    #[test]
+    fn sequential_split_reachable_costs_one_extra_try() {
+        let r = fit_size(1, 100, 555, SEQUENTIAL, single).unwrap();
+        assert_eq!((found(&r), r.tries), (Some(55), 9));
+        let r = fit_size(1, 100, 10_000, SEQUENTIAL, single).unwrap();
+        assert_eq!((found(&r), r.tries), (Some(100), 1));
     }
 
     #[test]
