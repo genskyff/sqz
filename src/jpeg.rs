@@ -1,8 +1,11 @@
 use anyhow::{Result, anyhow};
-use zenjpeg::encoder::{ChromaSubsampling, EncoderConfig, PixelLayout, Quality};
+use zenjpeg::encoder::{ChromaSubsampling, EncoderConfig, Exif, PixelLayout, Quality};
 
 use crate::cli::{Chroma, Rgb};
 use crate::decode::{icc_matches, is_gray, is_opaque};
+
+/// 一个 APP1 段能装下的 EXIF 上限。超出时编码器会直接截断，截断的 EXIF 是坏的，宁可不写
+const MAX_EXIF_BYTES: usize = 65527;
 
 /// 准备好的 JPEG 编码输入，可按不同质量重复编码。
 pub struct JpegJob<'a> {
@@ -13,6 +16,7 @@ pub struct JpegJob<'a> {
     gray: bool,
     chroma: ChromaSubsampling,
     icc: Option<&'a [u8]>,
+    exif: Option<&'a [u8]>,
 }
 
 impl<'a> JpegJob<'a> {
@@ -23,6 +27,7 @@ impl<'a> JpegJob<'a> {
         chroma: Chroma,
         background: Rgb,
         icc: Option<&'a [u8]>,
+        exif: Option<&'a [u8]>,
     ) -> Self {
         let opaque = is_opaque(&rgba);
         let gray = opaque && icc.is_none_or(|p| icc_matches(p, true)) && is_gray(&rgba);
@@ -45,6 +50,7 @@ impl<'a> JpegJob<'a> {
                 Chroma::C444 => ChromaSubsampling::None,
             },
             icc: icc.filter(|p| icc_matches(p, gray)),
+            exif: exif.filter(|e| e.len() <= MAX_EXIF_BYTES),
         }
     }
 
@@ -61,6 +67,9 @@ impl<'a> JpegJob<'a> {
         let mut request = config.request();
         if let Some(icc) = self.icc {
             request = request.icc_profile(icc);
+        }
+        if let Some(exif) = self.exif {
+            request = request.exif(Exif::raw(exif));
         }
         request
             .encode_bytes(&self.pixels, self.width, self.height, self.layout)
@@ -84,6 +93,7 @@ fn flatten(rgba: &[u8], bg: [u8; 3]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::decode::{ROTATED_TIFF, decode};
 
     #[test]
     fn flatten_blends_alpha() {
@@ -92,5 +102,32 @@ mod tests {
             flatten(&px, [255, 255, 255]),
             [255, 255, 255, 255, 0, 0, 127, 127, 255]
         );
+    }
+
+    #[test]
+    fn writes_exif_unless_too_large() {
+        let rgba = [200, 100, 50, 255].repeat(8 * 4);
+        let encode = |exif: &[u8]| {
+            let job = JpegJob::new(
+                8,
+                4,
+                rgba.clone(),
+                Chroma::C420,
+                Rgb([255; 3]),
+                None,
+                Some(exif),
+            );
+            decode(&job.encode(80).unwrap()).unwrap()
+        };
+        // 读回时按写入的方向旋转了，说明 EXIF 确实写进去了
+        let out = encode(ROTATED_TIFF);
+        assert_eq!((out.width, out.height), (4, 8));
+        assert!(out.exif.is_some());
+
+        let mut huge = ROTATED_TIFF.to_vec();
+        huge.resize(MAX_EXIF_BYTES + 1, 0);
+        let out = encode(&huge);
+        assert_eq!((out.width, out.height), (8, 4));
+        assert!(out.exif.is_none());
     }
 }

@@ -70,6 +70,10 @@ pub struct Cli {
     #[arg(long)]
     pub strip_icc: bool,
 
+    /// 不保留 EXIF（默认保留，方向已应用到像素上，EXIF 里的方向会重置为正常）
+    #[arg(long)]
+    pub strip_exif: bool,
+
     /// 同格式输出不比原文件小时仍写出结果（默认改为原样复制原文件）
     #[arg(long)]
     pub allow_larger: bool,

@@ -49,6 +49,7 @@ pub struct PngJob<'a> {
     quant_pixels: OnceLock<Vec<imagequant::RGBA>>,
     last_quantized: Mutex<Option<Arc<Quantized>>>,
     icc: Option<&'a [u8]>,
+    exif: Option<&'a [u8]>,
     max_colors: u32,
     dither: f32,
 }
@@ -61,6 +62,7 @@ impl<'a> PngJob<'a> {
         max_colors: u32,
         dither: f32,
         icc: Option<&'a [u8]>,
+        exif: Option<&'a [u8]>,
     ) -> Self {
         // 全透明像素的 RGB 看不见，统一置零以利于压缩
         for p in rgba.as_chunks_mut::<4>().0 {
@@ -75,6 +77,7 @@ impl<'a> PngJob<'a> {
             quant_pixels: OnceLock::new(),
             last_quantized: Mutex::new(None),
             icc,
+            exif,
             max_colors,
             dither,
         }
@@ -119,7 +122,14 @@ impl<'a> PngJob<'a> {
         };
         let raster = Raster::indexed(&quantized.palette, &quantized.indices, self.width);
         let idat = compress(&raster, effort);
-        Ok(assemble(&raster, self.width, self.height, &idat, self.icc))
+        Ok(assemble(
+            &raster,
+            self.width,
+            self.height,
+            &idat,
+            self.icc,
+            self.exif,
+        ))
     }
 
     fn quantize(&self, quality: u8) -> Result<Quantized> {
@@ -165,7 +175,7 @@ impl<'a> PngJob<'a> {
             })
             .min_by_key(|(_, idat)| idat.len())
             .expect("至少有一个候选");
-        assemble(&raster, self.width, self.height, &idat, self.icc)
+        assemble(&raster, self.width, self.height, &idat, self.icc, self.exif)
     }
 }
 
@@ -406,7 +416,14 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
     }
 }
 
-fn assemble(raster: &Raster, width: u32, height: u32, idat: &[u8], icc: Option<&[u8]>) -> Vec<u8> {
+fn assemble(
+    raster: &Raster,
+    width: u32,
+    height: u32,
+    idat: &[u8],
+    icc: Option<&[u8]>,
+    exif: Option<&[u8]>,
+) -> Vec<u8> {
     let mut out = Vec::with_capacity(idat.len() + raster.plte.len() + 1024);
     out.extend_from_slice(b"\x89PNG\r\n\x1a\n");
 
@@ -423,6 +440,9 @@ fn assemble(raster: &Raster, width: u32, height: u32, idat: &[u8], icc: Option<&
         let mut iccp = b"ICC Profile\0\0".to_vec();
         iccp.extend_from_slice(&zlib(icc, BEST_LEVEL));
         write_chunk(&mut out, b"iCCP", &iccp);
+    }
+    if let Some(exif) = exif {
+        write_chunk(&mut out, b"eXIf", exif);
     }
     if !raster.plte.is_empty() {
         write_chunk(&mut out, b"PLTE", &raster.plte);
@@ -448,7 +468,7 @@ fn write_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decode::decode;
+    use crate::decode::{ROTATED_TIFF, decode};
 
     fn gradient(width: u32, height: u32) -> Vec<u8> {
         (0..width * height)
@@ -467,7 +487,7 @@ mod tests {
     #[test]
     fn lossless_roundtrip_truecolor() {
         let src = gradient(37, 23);
-        let job = PngJob::new(37, 23, src.clone(), 256, 1.0, None);
+        let job = PngJob::new(37, 23, src.clone(), 256, 1.0, None, None);
         for effort in [Effort::Search, Effort::Final] {
             let png = job.encode(100, effort).unwrap();
             assert_eq!(decode(&png).unwrap().rgba, src);
@@ -479,7 +499,7 @@ mod tests {
         // 3 种颜色（含半透明）→ 2 位调色板，宽度不是 4 的倍数以覆盖行尾填充
         let colors = [[255, 0, 0, 255], [0, 0, 255, 128], [0, 0, 0, 0]];
         let src: Vec<u8> = (0..13 * 5).flat_map(|i| colors[i % 3]).collect();
-        let png = PngJob::new(13, 5, src.clone(), 256, 1.0, None)
+        let png = PngJob::new(13, 5, src.clone(), 256, 1.0, None, None)
             .encode(100, Effort::Final)
             .unwrap();
         assert_eq!(decode(&png).unwrap().rgba, src);
@@ -488,7 +508,7 @@ mod tests {
     #[test]
     fn lossy_respects_max_colors() {
         let src = gradient(64, 64);
-        let png = PngJob::new(64, 64, src, 16, 0.0, None)
+        let png = PngJob::new(64, 64, src, 16, 0.0, None, None)
             .encode(80, Effort::Final)
             .unwrap();
         let out = decode(&png).unwrap();
@@ -500,13 +520,24 @@ mod tests {
     fn dither_off_recomputes_quantization() {
         // 抖动烧进了索引，关掉抖动后不能复用之前的量化结果
         let src = gradient(64, 64);
-        let mut job = PngJob::new(64, 64, src.clone(), 256, 1.0, None);
+        let mut job = PngJob::new(64, 64, src.clone(), 256, 1.0, None, None);
         job.encode(50, Effort::Final).unwrap();
         job.disable_dither();
         let after = job.encode(50, Effort::Final).unwrap();
-        let fresh = PngJob::new(64, 64, src, 256, 0.0, None)
+        let fresh = PngJob::new(64, 64, src, 256, 0.0, None, None)
             .encode(50, Effort::Final)
             .unwrap();
         assert_eq!(after, fresh);
+    }
+
+    #[test]
+    fn writes_exif() {
+        let job = PngJob::new(8, 4, gradient(8, 4), 256, 1.0, None, Some(ROTATED_TIFF));
+        for quality in [100, 50] {
+            // 读回时按写入的方向旋转了，说明 EXIF 确实写进去了
+            let out = decode(&job.encode(quality, Effort::Final).unwrap()).unwrap();
+            assert_eq!((out.width, out.height), (4, 8));
+            assert!(out.exif.is_some());
+        }
     }
 }

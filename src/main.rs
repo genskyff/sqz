@@ -416,8 +416,10 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
     report.height = Some(height);
 
     // 原图带着要去掉的元数据，就不能拿原图顶替结果
-    let strips_metadata = cli.strip_icc && decoded.icc.is_some();
+    let strips_metadata =
+        (cli.strip_icc && decoded.icc.is_some()) || (cli.strip_exif && decoded.exif.is_some());
     let icc = if cli.strip_icc { None } else { decoded.icc };
+    let exif = if cli.strip_exif { None } else { decoded.exif };
     let mut encoder = match plan.format {
         OutputFormat::Jpeg => Encoder::Jpeg(JpegJob::new(
             width,
@@ -426,6 +428,7 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
             cli.chroma,
             cli.background,
             icc.as_deref(),
+            exif.as_deref(),
         )),
         OutputFormat::Png => Encoder::Png(PngJob::new(
             width,
@@ -434,10 +437,15 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
             cli.colors,
             cli.dither.unwrap_or(1.0),
             icc.as_deref(),
+            exif.as_deref(),
         )),
-        OutputFormat::Webp => {
-            Encoder::Webp(WebpJob::new(width, height, decoded.rgba, icc.as_deref()))
-        }
+        OutputFormat::Webp => Encoder::Webp(WebpJob::new(
+            width,
+            height,
+            decoded.rgba,
+            icc.as_deref(),
+            exif.as_deref(),
+        )),
     };
 
     let (mut data, mut status) = match cli.max_size {
