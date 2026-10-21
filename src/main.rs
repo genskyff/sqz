@@ -24,7 +24,7 @@ use search::{Fit, Order, climb, fit_size, retest_top};
 
 const DEFAULT_QUALITY: u8 = 75;
 
-const PNG_JPEG_HINT: &str = "PNG 降质只会减少颜色，照片类图片可改用 -f jpeg";
+const PNG_JPEG_HINT: &str = "PNG 降质只会减少颜色，照片类图片可改用 -f jpg";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OutputFormat {

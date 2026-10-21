@@ -27,7 +27,7 @@ pub struct Cli {
     pub suffix: Option<String>,
 
     /// 输出格式
-    #[arg(short, long, value_enum, default_value_t = FormatArg::Auto)]
+    #[arg(short, long, value_enum, ignore_case = true, default_value_t = FormatArg::Auto)]
     pub format: FormatArg,
 
     /// 质量 0-100（JPEG 刻度与 mozjpeg 相近；PNG 为 100 时无损）。与 --max-size 同用时作为质量上限，单用 --max-size 时上限为 JPEG 95 / PNG 100
@@ -86,6 +86,7 @@ pub struct Cli {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum FormatArg {
     Auto,
+    #[value(alias = "jpg")]
     Jpeg,
     Png,
 }
@@ -168,5 +169,15 @@ mod tests {
     fn colors() {
         assert_eq!(parse_color("#FF8000"), Ok(Rgb([255, 128, 0])));
         assert!(parse_color("fff").is_err());
+    }
+
+    #[test]
+    fn format_names() {
+        let format =
+            |name: &str| Cli::try_parse_from(["sqz", "a.png", "-f", name]).map(|c| c.format);
+        for name in ["jpeg", "jpg", "JPG", "Jpeg"] {
+            assert_eq!(format(name).unwrap(), FormatArg::Jpeg, "{name}");
+        }
+        assert!(format("gif").is_err());
     }
 }

@@ -27,7 +27,7 @@ sqz a.png b.heic -s 300KB --json         # 输出 JSON
 ## 说明
 
 - `-s` 会搜索不超过上限的最高质量；除非加 `--best-effort`，输出一定不超过上限
-- PNG 降质靠减少颜色，照片类图片压不到目标大小时改用 `-f jpeg`
+- PNG 降质靠减少颜色，照片类图片压不到目标大小时改用 `-f jpg`
 - EXIF 方向会应用到像素上，EXIF 本身不保留；ICC 默认保留
 
 ## JSON 输出
