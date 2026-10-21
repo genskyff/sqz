@@ -428,6 +428,12 @@ fn assemble(raster: &Raster, width: u32, height: u32, idat: &[u8], meta: Metadat
     if let Some(exif) = meta.exif {
         write_chunk(&mut out, b"eXIf", exif);
     }
+    if let Some(xmp) = meta.xmp {
+        // 关键字 + NUL + 不压缩 + 压缩方式 0 + 空语言标签 NUL + 空译名 NUL；XMP 规范要求不压缩
+        let mut itxt = b"XML:com.adobe.xmp\0\0\0\0\0".to_vec();
+        itxt.extend_from_slice(xmp);
+        write_chunk(&mut out, b"iTXt", &itxt);
+    }
     if !raster.plte.is_empty() {
         write_chunk(&mut out, b"PLTE", &raster.plte);
     }
@@ -452,7 +458,8 @@ fn write_chunk(out: &mut Vec<u8>, kind: &[u8; 4], data: &[u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decode::{ROTATED_TIFF, decode};
+    use crate::decode::decode;
+    use crate::meta::{ROTATED_TIFF, ROTATED_XMP};
 
     fn gradient(width: u32, height: u32) -> Vec<u8> {
         (0..width * height)
@@ -515,10 +522,11 @@ mod tests {
     }
 
     #[test]
-    fn writes_exif() {
+    fn writes_metadata() {
         let meta = Metadata {
             icc: None,
             exif: Some(ROTATED_TIFF),
+            xmp: Some(ROTATED_XMP),
         };
         let job = PngJob::new(8, 4, gradient(8, 4), 256, 1.0, meta);
         for quality in [100, 50] {
@@ -526,6 +534,7 @@ mod tests {
             let out = decode(&job.encode(quality, Effort::Final).unwrap()).unwrap();
             assert_eq!((out.width, out.height), (4, 8));
             assert!(out.exif.is_some());
+            assert!(out.xmp.is_some());
         }
     }
 }

@@ -3,12 +3,14 @@ use std::ops::Range;
 
 use image::metadata::Orientation;
 
-/// 要写进输出的元数据，EXIF 已按输出调整好
+/// 要写进输出的元数据，EXIF、XMP 已按输出调整好
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Metadata<'a> {
     pub icc: Option<&'a [u8]>,
     /// 裸 TIFF 格式
     pub exif: Option<&'a [u8]>,
+    /// XMP 包的 XML 文本
+    pub xmp: Option<&'a [u8]>,
 }
 
 /// 统一成裸 TIFF：去掉 JPEG 式的 `Exif\0\0` 前缀，丢弃不是 TIFF 的数据。
@@ -23,6 +25,60 @@ pub fn exif_for_output(raw: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
     let _ = Orientation::remove_from_exif_chunk(&mut exif);
     set_exif_dimensions(&mut exif, width, height);
     Some(exif)
+}
+
+/// XMP 里的方向和尺寸同 EXIF 一样改成输出后的值；不是 UTF-8 的 XMP 无法改写，丢弃。
+pub fn xmp_for_output(raw: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
+    // 有的写入方在 XMP 包后补 NUL，PNG 的 iTXt 文本里不允许出现
+    let mut xml = std::str::from_utf8(raw)
+        .ok()?
+        .trim_end_matches('\0')
+        .to_owned();
+    for (name, value) in [
+        ("tiff:Orientation", 1),
+        ("tiff:ImageWidth", width),
+        ("tiff:ImageLength", height),
+        ("exif:PixelXDimension", width),
+        ("exif:PixelYDimension", height),
+    ] {
+        set_values(&mut xml, name, &value.to_string());
+    }
+    Some(xml.into_bytes())
+}
+
+/// 简单属性 `name` 在 `from` 之后第一处值的范围，`name="v"`、`name='v'`、`<name>v</name>` 三种写法都认。
+/// 名字紧跟在名字字符后面的不算，免得 `tiff:Orientation` 匹配到别的前缀里。
+fn value_range(xml: &str, name: &str, from: usize) -> Option<Range<usize>> {
+    let forms = [
+        (format!("{name}=\""), '"'),
+        (format!("{name}='"), '\''),
+        (format!("<{name}>"), '<'),
+    ];
+    forms
+        .iter()
+        .filter_map(|(open, close)| {
+            let mut at = from;
+            loop {
+                let start = at + xml[at..].find(open.as_str())?;
+                let value = start + open.len();
+                at = value;
+                let prev = xml[..start].chars().next_back();
+                if prev.is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '-' | '.' | ':')) {
+                    continue;
+                }
+                return Some(value..value + xml[value..].find(*close)?);
+            }
+        })
+        .min_by_key(|range| range.start)
+}
+
+/// 把 `name` 的每处值都换成 `value`
+fn set_values(xml: &mut String, name: &str, value: &str) {
+    let mut from = 0;
+    while let Some(range) = value_range(xml, name, from) {
+        from = range.start + value.len();
+        xml.replace_range(range, value);
+    }
 }
 
 const IMAGE_WIDTH: u16 = 0x0100;
@@ -132,10 +188,17 @@ impl Tiff<'_> {
     }
 }
 
+/// 只含 Orientation=6（顺时针转 90°）的小端 TIFF
+#[cfg(test)]
+pub const ROTATED_TIFF: &[u8] = b"II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+
+/// 只含 tiff:Orientation=6 的 XMP
+#[cfg(test)]
+pub const ROTATED_XMP: &[u8] = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/" tiff:Orientation="6"/></rdf:RDF></x:xmpmeta>"#;
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decode::ROTATED_TIFF;
 
     #[test]
     fn exif_for_output_resets_orientation_and_strips_prefix() {
@@ -228,5 +291,26 @@ mod tests {
         let (raw, _) = tiff_with_dimensions(false);
         let out = exif_for_output(&raw[..40], 1, 1).unwrap();
         assert_eq!(out, raw[..40]);
+    }
+
+    #[test]
+    fn xmp_for_output_rewrites_orientation_and_dimensions() {
+        let xmp = concat!(
+            r#"<rdf:Description tiff:Orientation="6" exif:PixelXDimension='5712'"#,
+            r#" xtiff:Orientation="6">"#,
+            "<exif:PixelYDimension>4284</exif:PixelYDimension>",
+            "<stDim:w>5712</stDim:w></rdf:Description>\0\0",
+        );
+        let out = xmp_for_output(xmp.as_bytes(), 4284, 5712).unwrap();
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            concat!(
+                r#"<rdf:Description tiff:Orientation="1" exif:PixelXDimension='4284'"#,
+                r#" xtiff:Orientation="6">"#,
+                "<exif:PixelYDimension>5712</exif:PixelYDimension>",
+                "<stDim:w>5712</stDim:w></rdf:Description>",
+            )
+        );
+        assert_eq!(xmp_for_output(b"\xff\xfe<x/>", 1, 1), None);
     }
 }

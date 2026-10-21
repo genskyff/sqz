@@ -74,6 +74,10 @@ pub struct Cli {
     #[arg(long)]
     pub strip_exif: bool,
 
+    /// 不保留 XMP（默认保留，方向和像素尺寸的处理同 EXIF）
+    #[arg(long)]
+    pub strip_xmp: bool,
+
     /// 同格式输出不比原文件小时仍写出结果（默认改为原样复制原文件）
     #[arg(long)]
     pub allow_larger: bool,

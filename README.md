@@ -29,7 +29,7 @@ sqz a.png b.heic -s 300KB --json         # 输出 JSON
 
 - `-s` 会搜索不超过上限的最高质量；除非加 `--best-effort`，输出一定不超过上限
 - PNG 降质靠减少颜色，照片类图片压不到目标大小时改用 `-f jpg`
-- EXIF、ICC 默认保留；EXIF 方向会应用到像素上，输出里的方向标记重置为正常、像素尺寸改为输出尺寸
+- EXIF、XMP、ICC 默认保留；方向会应用到像素上，EXIF 和 XMP 里的方向重置为正常、像素尺寸改为输出尺寸
 
 ## JSON 输出
 
@@ -55,4 +55,5 @@ sqz a.png b.heic -s 300KB --json         # 输出 JSON
 - HEIC 没有 ICC、只用 nclx 标注 Display P3 时，颜色会偏淡
 - 16-bit PNG 会降为 8-bit
 - 不支持动图 WebP
-- 输出 JPEG 时，超过 64KB 的 EXIF 会被丢弃（JPEG 单个 EXIF 段放不下）
+- 输出 JPEG 时，超过 64KB 的 EXIF 或 XMP 会被丢弃（JPEG 单个段放不下）
+- XMP 里的区域标注（人脸、对焦框）不随转正调整坐标

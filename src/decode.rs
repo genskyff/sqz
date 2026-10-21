@@ -4,7 +4,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbaImage};
 
-use crate::meta::{exif_for_output, tiff_exif};
+use crate::meta::{exif_for_output, tiff_exif, xmp_for_output};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputFormat {
@@ -24,6 +24,8 @@ pub struct Decoded {
     pub icc: Option<Vec<u8>>,
     /// 裸 TIFF 格式的 EXIF，方向和尺寸已改成输出后的值
     pub exif: Option<Vec<u8>>,
+    /// XMP 包的 XML，方向和尺寸已改成输出后的值
+    pub xmp: Option<Vec<u8>>,
 }
 
 impl Decoded {
@@ -33,6 +35,7 @@ impl Decoded {
         rgba: Vec<u8>,
         icc: Option<Vec<u8>>,
         exif: Option<&[u8]>,
+        xmp: Option<&[u8]>,
     ) -> Self {
         Self {
             width,
@@ -40,6 +43,7 @@ impl Decoded {
             rgba,
             icc,
             exif: exif.and_then(|raw| exif_for_output(raw, width, height)),
+            xmp: xmp.and_then(|raw| xmp_for_output(raw, width, height)),
         }
     }
 }
@@ -103,6 +107,7 @@ fn decode_with_image(data: &[u8], image_format: ImageFormat) -> Result<Decoded> 
         .context("解析图片头失败")?;
     let icc = decoder.icc_profile().context("读取 ICC 失败")?;
     let exif = decoder.exif_metadata().context("读取 EXIF 失败")?;
+    let xmp = decoder.xmp_metadata().context("读取 XMP 失败")?;
     let orientation = decoder.orientation().context("读取 EXIF 方向失败")?;
     let mut img = DynamicImage::from_decoder(decoder).context("解码失败")?;
     img.apply_orientation(orientation);
@@ -113,6 +118,7 @@ fn decode_with_image(data: &[u8], image_format: ImageFormat) -> Result<Decoded> 
         rgba.into_raw(),
         icc,
         exif.as_deref(),
+        xmp.as_deref(),
     ))
 }
 
@@ -128,12 +134,16 @@ fn decode_heic(data: &[u8]) -> Result<Decoded> {
     let exif = config
         .extract_exif(data)
         .map_err(|e| anyhow!("读取 HEIC 的 EXIF 失败：{e}"))?;
+    let xmp = config
+        .extract_xmp(data)
+        .map_err(|e| anyhow!("读取 HEIC 的 XMP 失败：{e}"))?;
     Ok(Decoded::new(
         out.width,
         out.height,
         out.data,
         icc,
         exif.as_deref(),
+        xmp.as_deref(),
     ))
 }
 
@@ -161,16 +171,14 @@ fn decode_webp(data: &[u8]) -> Result<Decoded> {
         rgba.into_raw(),
         info.icc_profile,
         info.exif.as_deref(),
+        info.xmp.as_deref(),
     ))
 }
-
-/// 只含 Orientation=6（顺时针转 90°）的小端 TIFF
-#[cfg(test)]
-pub const ROTATED_TIFF: &[u8] = b"II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::meta::ROTATED_TIFF;
 
     #[test]
     fn sniff_formats() {

@@ -5,8 +5,9 @@ use crate::cli::{Chroma, Rgb};
 use crate::decode::{icc_matches, is_gray, is_opaque};
 use crate::meta::Metadata;
 
-/// 一个 APP1 段能装下的 EXIF 上限。超出时编码器会直接截断，截断的 EXIF 是坏的，宁可不写
+/// 一个 APP1 段能装下的 EXIF、XMP 上限。超出时编码器会直接截断，截断的数据是坏的，宁可不写
 const MAX_EXIF_BYTES: usize = 65527;
+const MAX_XMP_BYTES: usize = 65504;
 
 /// 准备好的 JPEG 编码输入，可按不同质量重复编码。
 pub struct JpegJob<'a> {
@@ -51,6 +52,7 @@ impl<'a> JpegJob<'a> {
             meta: Metadata {
                 icc: meta.icc.filter(|p| icc_matches(p, gray)),
                 exif: meta.exif.filter(|e| e.len() <= MAX_EXIF_BYTES),
+                xmp: meta.xmp.filter(|x| x.len() <= MAX_XMP_BYTES),
             },
         }
     }
@@ -71,6 +73,9 @@ impl<'a> JpegJob<'a> {
         }
         if let Some(exif) = self.meta.exif {
             request = request.exif(Exif::raw(exif));
+        }
+        if let Some(xmp) = self.meta.xmp {
+            request = request.xmp(xmp);
         }
         request
             .encode_bytes(&self.pixels, self.width, self.height, self.layout)
@@ -94,7 +99,8 @@ fn flatten(rgba: &[u8], bg: [u8; 3]) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decode::{ROTATED_TIFF, decode};
+    use crate::decode::decode;
+    use crate::meta::{ROTATED_TIFF, ROTATED_XMP};
 
     #[test]
     fn flatten_blends_alpha() {
@@ -106,25 +112,30 @@ mod tests {
     }
 
     #[test]
-    fn writes_exif_unless_too_large() {
+    fn writes_metadata_unless_too_large() {
         let rgba = [200, 100, 50, 255].repeat(8 * 4);
-        let encode = |exif: &[u8]| {
+        let encode = |exif: &[u8], xmp: &[u8]| {
             let meta = Metadata {
                 icc: None,
                 exif: Some(exif),
+                xmp: Some(xmp),
             };
             let job = JpegJob::new(8, 4, rgba.clone(), Chroma::C420, Rgb([255; 3]), meta);
             decode(&job.encode(80).unwrap()).unwrap()
         };
         // 读回时按写入的方向旋转了，说明 EXIF 确实写进去了
-        let out = encode(ROTATED_TIFF);
+        let out = encode(ROTATED_TIFF, ROTATED_XMP);
         assert_eq!((out.width, out.height), (4, 8));
         assert!(out.exif.is_some());
+        assert!(out.xmp.is_some());
 
-        let mut huge = ROTATED_TIFF.to_vec();
-        huge.resize(MAX_EXIF_BYTES + 1, 0);
-        let out = encode(&huge);
+        let mut huge_exif = ROTATED_TIFF.to_vec();
+        huge_exif.resize(MAX_EXIF_BYTES + 1, 0);
+        let mut huge_xmp = ROTATED_XMP.to_vec();
+        huge_xmp.resize(MAX_XMP_BYTES + 1, b' ');
+        let out = encode(&huge_exif, &huge_xmp);
         assert_eq!((out.width, out.height), (8, 4));
         assert!(out.exif.is_none());
+        assert!(out.xmp.is_none());
     }
 }

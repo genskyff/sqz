@@ -64,6 +64,9 @@ impl<'a> WebpJob<'a> {
         if let Some(exif) = self.meta.exif {
             request = request.with_exif(exif);
         }
+        if let Some(xmp) = self.meta.xmp {
+            request = request.with_xmp(xmp);
+        }
         request.encode().map_err(|e| anyhow!("WebP 编码失败：{e}"))
     }
 }
@@ -71,7 +74,8 @@ impl<'a> WebpJob<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decode::{InputFormat, ROTATED_TIFF, decode, sniff};
+    use crate::decode::{InputFormat, decode, sniff};
+    use crate::meta::{ROTATED_TIFF, ROTATED_XMP};
 
     fn gradient(width: u32, height: u32, alpha: u8) -> Vec<u8> {
         (0..width * height)
@@ -126,10 +130,11 @@ mod tests {
     }
 
     #[test]
-    fn writes_exif() {
+    fn writes_metadata() {
         let meta = Metadata {
             icc: None,
             exif: Some(ROTATED_TIFF),
+            xmp: Some(ROTATED_XMP),
         };
         let job = WebpJob::new(8, 4, gradient(8, 4, 255), meta);
         for webp in [job.encode(80).unwrap(), job.lossless().unwrap()] {
@@ -137,6 +142,7 @@ mod tests {
             let out = decode(&webp).unwrap();
             assert_eq!((out.width, out.height), (4, 8));
             assert!(out.exif.is_some());
+            assert!(out.xmp.is_some());
         }
     }
 }
