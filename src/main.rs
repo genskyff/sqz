@@ -401,6 +401,8 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
     report.width = Some(width);
     report.height = Some(height);
 
+    // 原图带着要去掉的元数据，就不能拿原图顶替结果
+    let strips_metadata = cli.strip_icc && decoded.icc.is_some();
     let icc = if cli.strip_icc { None } else { decoded.icc };
     let mut encoder = match plan.format {
         OutputFormat::Jpeg => Encoder::Jpeg(JpegJob::new(
@@ -546,8 +548,10 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
         report.dither = encoder.dither();
     }
 
-    let kept_original =
-        plan.format.same_as(plan.input_format) && !cli.allow_larger && data.len() >= original.len();
+    let kept_original = plan.format.same_as(plan.input_format)
+        && !cli.allow_larger
+        && !strips_metadata
+        && data.len() >= original.len();
     if kept_original {
         data = original;
         report.quality = None;
