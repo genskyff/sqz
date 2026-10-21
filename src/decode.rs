@@ -4,6 +4,8 @@ use anyhow::{Context, Result, anyhow, bail};
 use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbaImage};
 
+use crate::meta::{exif_for_output, tiff_exif};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputFormat {
     Png,
@@ -20,21 +22,26 @@ pub struct Decoded {
     pub height: u32,
     pub rgba: Vec<u8>,
     pub icc: Option<Vec<u8>>,
-    /// 裸 TIFF 格式的 EXIF，方向标记已重置为正常
+    /// 裸 TIFF 格式的 EXIF，方向和尺寸已改成输出后的值
     pub exif: Option<Vec<u8>>,
 }
 
-/// 统一成裸 TIFF：去掉 JPEG 式的 `Exif\0\0` 前缀，丢弃不是 TIFF 的数据。
-fn tiff_exif(raw: &[u8]) -> Option<&[u8]> {
-    let tiff = raw.strip_prefix(b"Exif\0\0").unwrap_or(raw);
-    (tiff.starts_with(b"II*\0") || tiff.starts_with(b"MM\0*")).then_some(tiff)
-}
-
-/// 方向已应用到像素上，输出的 EXIF 里方向必须改成正常，否则看图软件会再转一次。
-fn exif_for_output(raw: &[u8]) -> Option<Vec<u8>> {
-    let mut exif = tiff_exif(raw)?.to_vec();
-    let _ = Orientation::remove_from_exif_chunk(&mut exif);
-    Some(exif)
+impl Decoded {
+    fn new(
+        width: u32,
+        height: u32,
+        rgba: Vec<u8>,
+        icc: Option<Vec<u8>>,
+        exif: Option<&[u8]>,
+    ) -> Self {
+        Self {
+            width,
+            height,
+            rgba,
+            icc,
+            exif: exif.and_then(|raw| exif_for_output(raw, width, height)),
+        }
+    }
 }
 
 pub fn is_opaque(rgba: &[u8]) -> bool {
@@ -100,13 +107,13 @@ fn decode_with_image(data: &[u8], image_format: ImageFormat) -> Result<Decoded> 
     let mut img = DynamicImage::from_decoder(decoder).context("解码失败")?;
     img.apply_orientation(orientation);
     let rgba = img.into_rgba8();
-    Ok(Decoded {
-        width: rgba.width(),
-        height: rgba.height(),
-        rgba: rgba.into_raw(),
+    Ok(Decoded::new(
+        rgba.width(),
+        rgba.height(),
+        rgba.into_raw(),
         icc,
-        exif: exif.as_deref().and_then(exif_for_output),
-    })
+        exif.as_deref(),
+    ))
 }
 
 fn decode_heic(data: &[u8]) -> Result<Decoded> {
@@ -121,13 +128,13 @@ fn decode_heic(data: &[u8]) -> Result<Decoded> {
     let exif = config
         .extract_exif(data)
         .map_err(|e| anyhow!("读取 HEIC 的 EXIF 失败：{e}"))?;
-    Ok(Decoded {
-        width: out.width,
-        height: out.height,
-        rgba: out.data,
+    Ok(Decoded::new(
+        out.width,
+        out.height,
+        out.data,
         icc,
-        exif: exif.as_deref().and_then(exif_for_output),
-    })
+        exif.as_deref(),
+    ))
 }
 
 fn decode_webp(data: &[u8]) -> Result<Decoded> {
@@ -148,13 +155,13 @@ fn decode_webp(data: &[u8]) -> Result<Decoded> {
     let mut img = DynamicImage::ImageRgba8(rgba);
     img.apply_orientation(orientation);
     let rgba = img.into_rgba8();
-    Ok(Decoded {
-        width: rgba.width(),
-        height: rgba.height(),
-        rgba: rgba.into_raw(),
-        icc: info.icc_profile,
-        exif: info.exif.as_deref().and_then(exif_for_output),
-    })
+    Ok(Decoded::new(
+        rgba.width(),
+        rgba.height(),
+        rgba.into_raw(),
+        info.icc_profile,
+        info.exif.as_deref(),
+    ))
 }
 
 /// 只含 Orientation=6（顺时针转 90°）的小端 TIFF
@@ -179,21 +186,6 @@ mod tests {
         );
         assert_eq!(sniff(b"RIFF\x24\x00\x00\x00WAVEfmt "), None);
         assert_eq!(sniff(b"GIF89a"), None);
-    }
-
-    #[test]
-    fn exif_for_output_resets_orientation_and_strips_prefix() {
-        let prefixed = [&b"Exif\0\0"[..], ROTATED_TIFF].concat();
-        for raw in [ROTATED_TIFF, &prefixed[..]] {
-            let out = exif_for_output(raw).unwrap();
-            assert!(out.starts_with(b"II*\0"));
-            assert_eq!(out.len(), ROTATED_TIFF.len());
-            assert_eq!(
-                Orientation::from_exif_chunk(&out),
-                Some(Orientation::NoTransforms)
-            );
-        }
-        assert_eq!(exif_for_output(b"not exif"), None);
     }
 
     #[test]

@@ -1,6 +1,7 @@
 mod cli;
 mod decode;
 mod jpeg;
+mod meta;
 mod png;
 mod search;
 mod webp;
