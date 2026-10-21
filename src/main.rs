@@ -102,6 +102,15 @@ impl Encoder<'_> {
         }
     }
 
+    /// --convert-only 的编码：PNG、WebP 无损，JPEG 没有无损模式，用最高质量
+    fn convert(&self) -> Result<Vec<u8>> {
+        match self {
+            Encoder::Jpeg(job) => job.encode(100),
+            Encoder::Png(job) => job.encode(100, Effort::Final),
+            Encoder::Webp(job) => job.lossless(),
+        }
+    }
+
     /// PNG 搜索时用的是快速档位，定稿再用最高档重压并取更小者，因此不会超出上限。
     fn refine(&self, quality: u8, searched: Vec<u8>) -> Result<Vec<u8>> {
         match self {
@@ -210,6 +219,10 @@ fn main() -> ExitCode {
     cli.inputs = expand_inputs(&cli.inputs);
     if cli.output.is_some() && cli.inputs.len() > 1 {
         eprintln!("错误：-o 只能用于单个输入，多个输入请用 -d 指定输出目录");
+        return ExitCode::from(2);
+    }
+    if cli.convert_only && explicit_format(&cli).is_none() {
+        eprintln!("错误：--convert-only 须用 -f 或 -o 的扩展名指定目标格式");
         return ExitCode::from(2);
     }
     if let Some(threads) = cli.jobs
@@ -323,20 +336,11 @@ fn plan(cli: &Cli, input: &Path) -> Result<Plan> {
         .context("读取失败")?;
     let input_format = decode::sniff(&head).context(decode::UNSUPPORTED_INPUT)?;
 
-    let format = match cli.format {
-        FormatArg::Jpeg => OutputFormat::Jpeg,
-        FormatArg::Png => OutputFormat::Png,
-        FormatArg::Webp => OutputFormat::Webp,
-        FormatArg::Auto => cli
-            .output
-            .as_deref()
-            .and_then(OutputFormat::from_path)
-            .unwrap_or(match input_format {
-                InputFormat::Png => OutputFormat::Png,
-                InputFormat::Jpeg | InputFormat::Heic => OutputFormat::Jpeg,
-                InputFormat::Webp => OutputFormat::Webp,
-            }),
-    };
+    let format = explicit_format(cli).unwrap_or(match input_format {
+        InputFormat::Png => OutputFormat::Png,
+        InputFormat::Jpeg | InputFormat::Heic => OutputFormat::Jpeg,
+        InputFormat::Webp => OutputFormat::Webp,
+    });
 
     let output = output_path(cli, input, format);
     if !cli.overwrite && output.exists() {
@@ -353,6 +357,16 @@ fn plan(cli: &Cli, input: &Path) -> Result<Plan> {
         format,
         output,
     })
+}
+
+/// -f 优先，其次是 -o 的扩展名
+fn explicit_format(cli: &Cli) -> Option<OutputFormat> {
+    match cli.format {
+        FormatArg::Jpeg => Some(OutputFormat::Jpeg),
+        FormatArg::Png => Some(OutputFormat::Png),
+        FormatArg::Webp => Some(OutputFormat::Webp),
+        FormatArg::Auto => cli.output.as_deref().and_then(OutputFormat::from_path),
+    }
 }
 
 fn output_path(cli: &Cli, input: &Path, format: OutputFormat) -> PathBuf {
@@ -427,6 +441,10 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
     };
 
     let (mut data, mut status) = match cli.max_size {
+        None if cli.convert_only => {
+            report.tries = 1;
+            (encoder.convert()?, Status::Ok)
+        }
         None => {
             let quality = cli.quality.unwrap_or(DEFAULT_QUALITY);
             report.quality = Some(quality);
@@ -695,5 +713,19 @@ mod tests {
         }
         expected.extend([missing, dir.join("c.jpg")]);
         assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn explicit_format_prefers_flag_over_extension() {
+        let explicit = |args: &[&str]| {
+            explicit_format(&Cli::try_parse_from(["sqz", "a"].iter().chain(args)).unwrap())
+        };
+        assert_eq!(explicit(&[]), None);
+        assert_eq!(explicit(&["-o", "x.gif"]), None);
+        assert_eq!(explicit(&["-o", "x.JPEG"]), Some(OutputFormat::Jpeg));
+        assert_eq!(
+            explicit(&["-f", "png", "-o", "x.webp"]),
+            Some(OutputFormat::Png)
+        );
     }
 }

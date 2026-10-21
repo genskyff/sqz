@@ -1,9 +1,9 @@
 use anyhow::{Result, anyhow};
-use zenwebp::{EncodeRequest, LossyConfig, PixelLayout};
+use zenwebp::{EncodeRequest, LosslessConfig, LossyConfig, PixelLayout};
 
 use crate::decode::{icc_matches, is_opaque};
 
-/// 准备好的 WebP 有损编码输入，可按不同质量重复编码。
+/// 准备好的 WebP 编码输入，可按不同质量重复编码。
 pub struct WebpJob<'a> {
     width: u32,
     height: u32,
@@ -38,8 +38,22 @@ impl<'a> WebpJob<'a> {
 
     pub fn encode(&self, quality: u8) -> Result<Vec<u8>> {
         let config = LossyConfig::new().with_quality(f32::from(quality));
-        let mut request =
+        let request =
             EncodeRequest::lossy(&config, &self.pixels, self.layout, self.width, self.height);
+        self.finish(request)
+    }
+
+    pub fn lossless(&self) -> Result<Vec<u8>> {
+        let config = LosslessConfig::new();
+        let request =
+            EncodeRequest::lossless(&config, &self.pixels, self.layout, self.width, self.height);
+        self.finish(request)
+    }
+
+    fn finish<'r>(&self, mut request: EncodeRequest<'r>) -> Result<Vec<u8>>
+    where
+        'a: 'r,
+    {
         if let Some(icc) = self.icc {
             request = request.with_icc_profile(icc);
         }
@@ -89,5 +103,14 @@ mod tests {
         let src = gradient(64, 64, 255);
         let job = WebpJob::new(64, 64, src, None);
         assert!(job.encode(20).unwrap().len() < job.encode(95).unwrap().len());
+    }
+
+    #[test]
+    fn lossless_keeps_pixels() {
+        for alpha in [255, 128] {
+            let src = gradient(48, 32, alpha);
+            let webp = WebpJob::new(48, 32, src.clone(), None).lossless().unwrap();
+            assert_eq!(decode(&webp).unwrap().rgba, src);
+        }
     }
 }

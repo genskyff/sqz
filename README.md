@@ -1,6 +1,6 @@
 # sqz
 
-纯 Rust 实现的图片压缩工具。输入 PNG、JPEG、HEIC、WebP，输出 JPEG、PNG 或 WebP（有损），可以指定质量，也可以只给文件大小上限，由工具反推质量。默认参数参考 [Squoosh](https://github.com/GoogleChromeLabs/squoosh)。
+纯 Rust 实现的图片压缩工具。输入 PNG、JPEG、HEIC、WebP，默认输出与输入同格式（HEIC 转成 JPEG），也可以转成 JPEG、PNG 或 WebP。可以指定质量，也可以只给文件大小上限，由工具反推质量。默认参数参考 [Squoosh](https://github.com/GoogleChromeLabs/squoosh)。
 
 ## 安装
 
@@ -19,6 +19,7 @@ sqz photo.jpg                            # 默认 q75，输出 photo.min.jpg
 sqz IMG_0001.HEIC -s 500KB               # 转成 JPEG，不超过 500KB
 sqz *.png *.jpg -q 90 -s 1MB -d out      # 质量不高于 90，且不超过 1MB
 sqz icon.png -q 100 -o icon.opt.png      # PNG 无损压缩
+sqz shot.png --convert-only -f webp      # 只转格式不降质，输出无损 WebP
 sqz a.png b.heic -s 300KB --json         # 输出 JSON
 ```
 

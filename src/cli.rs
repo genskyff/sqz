@@ -30,6 +30,10 @@ pub struct Cli {
     #[arg(short, long, value_enum, ignore_case = true, default_value_t = FormatArg::Auto)]
     pub format: FormatArg,
 
+    /// 只转换格式，不降质：PNG、WebP 无损，JPEG 用 q100。须用 -f 或 -o 的扩展名指定目标格式
+    #[arg(long, conflicts_with_all = ["quality", "max_size", "min_quality", "best_effort", "colors", "dither"])]
+    pub convert_only: bool,
+
     /// 质量 0-100（JPEG 刻度与 mozjpeg 相近；PNG 为 100 时无损；WebP 为有损）。与 --max-size 同用时作为质量上限，单用 --max-size 时上限为 JPEG/WebP 95、PNG 100
     #[arg(short, long, value_parser = clap::value_parser!(u8).range(0..=100))]
     pub quality: Option<u8>,
@@ -181,5 +185,28 @@ mod tests {
         }
         assert_eq!(format("webp").unwrap(), FormatArg::Webp);
         assert!(format("gif").is_err());
+    }
+
+    #[test]
+    fn convert_only_rejects_quality_options() {
+        let parse = |extra: &[&str]| {
+            Cli::try_parse_from(
+                ["sqz", "a.png", "-f", "webp", "--convert-only"]
+                    .iter()
+                    .chain(extra),
+            )
+        };
+        assert!(parse(&[]).is_ok());
+        assert!(parse(&["--chroma", "444"]).is_ok());
+        for extra in [
+            &["-q", "80"][..],
+            &["-s", "100KB"],
+            &["--min-quality", "10"],
+            &["--best-effort"],
+            &["--colors", "64"],
+            &["--dither", "0"],
+        ] {
+            assert!(parse(extra).is_err(), "{extra:?}");
+        }
     }
 }
