@@ -4,7 +4,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbaImage};
 
-use crate::meta::{exif_for_output, tiff_exif, xmp_for_output};
+use crate::meta::{Reorientation, exif_for_output, tiff_exif, xmp_for_output};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputFormat {
@@ -29,6 +29,7 @@ pub struct Decoded {
 }
 
 impl Decoded {
+    /// `regions` 是把 XMP 里的 MWG 区域从记录时的坐标系换到输出像素的变换
     fn new(
         width: u32,
         height: u32,
@@ -36,6 +37,7 @@ impl Decoded {
         icc: Option<Vec<u8>>,
         exif: Option<&[u8]>,
         xmp: Option<&[u8]>,
+        regions: Reorientation,
     ) -> Self {
         Self {
             width,
@@ -43,7 +45,7 @@ impl Decoded {
             rgba,
             icc,
             exif: exif.and_then(|raw| exif_for_output(raw, width, height)),
-            xmp: xmp.and_then(|raw| xmp_for_output(raw, width, height)),
+            xmp: xmp.and_then(|raw| xmp_for_output(raw, width, height, regions)),
         }
     }
 }
@@ -119,6 +121,7 @@ fn decode_with_image(data: &[u8], image_format: ImageFormat) -> Result<Decoded> 
         icc,
         exif.as_deref(),
         xmp.as_deref(),
+        Reorientation::from_exif(orientation.to_exif()),
     ))
 }
 
@@ -137,6 +140,17 @@ fn decode_heic(data: &[u8]) -> Result<Decoded> {
     let xmp = config
         .extract_xmp(data)
         .map_err(|e| anyhow!("读取 HEIC 的 XMP 失败：{e}"))?;
+    // iPhone 的 HEIC 可能已按竖图存储、不带 irot，EXIF 方向却仍记着相对传感器的旋转，MWG 区域也按传感器方向写，
+    // 所以区域优先按 EXIF 方向换算，EXIF 没写方向时才按 irot/imir
+    let regions = exif
+        .as_deref()
+        .and_then(tiff_exif)
+        .and_then(Orientation::from_exif_chunk)
+        .filter(|&o| o != Orientation::NoTransforms)
+        .map_or_else(
+            || heic_reorientation(data),
+            |o| Reorientation::from_exif(o.to_exif()),
+        );
     Ok(Decoded::new(
         out.width,
         out.height,
@@ -144,7 +158,36 @@ fn decode_heic(data: &[u8]) -> Result<Decoded> {
         icc,
         exif.as_deref(),
         xmp.as_deref(),
+        regions,
     ))
+}
+
+/// heic 解码时按 ipma 的顺序应用 imir、irot，这里按同样的顺序组合出整体变换。
+/// irot 已被换算成顺时针角度；imir 的 axis 0 上下翻转、1 左右翻转，与 heic 的实现一致。
+fn heic_reorientation(data: &[u8]) -> Reorientation {
+    use heic::heif::Transform;
+    let item = heic::heif::parse(data, &heic::Unstoppable)
+        .ok()
+        .and_then(|container| container.primary_item());
+    let Some(item) = item else {
+        return Reorientation::default();
+    };
+    item.transforms
+        .iter()
+        .fold(Reorientation::default(), |acc, t| {
+            let step = match t {
+                Transform::Mirror(mirror) if mirror.axis == 0 => Reorientation::from_exif(4),
+                Transform::Mirror(_) => Reorientation::from_exif(2),
+                Transform::Rotation(rotation) => Reorientation::from_exif(match rotation.angle {
+                    90 => 6,
+                    180 => 3,
+                    270 => 8,
+                    _ => 1,
+                }),
+                Transform::CleanAperture(_) => Reorientation::default(),
+            };
+            acc.then(step)
+        })
 }
 
 fn decode_webp(data: &[u8]) -> Result<Decoded> {
@@ -172,6 +215,7 @@ fn decode_webp(data: &[u8]) -> Result<Decoded> {
         info.icc_profile,
         info.exif.as_deref(),
         info.xmp.as_deref(),
+        Reorientation::from_exif(orientation.to_exif()),
     ))
 }
 

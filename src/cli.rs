@@ -74,7 +74,7 @@ pub struct Cli {
     #[arg(long)]
     pub strip_exif: bool,
 
-    /// 不保留 XMP（默认保留，方向和像素尺寸的处理同 EXIF）
+    /// 不保留 XMP（默认保留，方向和像素尺寸的处理同 EXIF，MWG 区域标注随像素一起转）
     #[arg(long)]
     pub strip_xmp: bool,
 
