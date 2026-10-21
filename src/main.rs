@@ -3,6 +3,7 @@ mod decode;
 mod jpeg;
 mod png;
 mod search;
+mod webp;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
@@ -21,6 +22,7 @@ use decode::InputFormat;
 use jpeg::JpegJob;
 use png::{Effort, PngJob};
 use search::{Fit, Order, climb, fit_size, retest_top};
+use webp::WebpJob;
 
 const DEFAULT_QUALITY: u8 = 75;
 
@@ -30,6 +32,7 @@ const PNG_JPEG_HINT: &str = "PNG 降质只会减少颜色，照片类图片可�
 enum OutputFormat {
     Jpeg,
     Png,
+    Webp,
 }
 
 impl OutputFormat {
@@ -37,6 +40,7 @@ impl OutputFormat {
         match self {
             OutputFormat::Jpeg => "jpeg",
             OutputFormat::Png => "png",
+            OutputFormat::Webp => "webp",
         }
     }
 
@@ -44,6 +48,7 @@ impl OutputFormat {
         match self {
             OutputFormat::Jpeg => "jpg",
             OutputFormat::Png => "png",
+            OutputFormat::Webp => "webp",
         }
     }
 
@@ -51,6 +56,7 @@ impl OutputFormat {
         match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
             "jpg" | "jpeg" => Some(OutputFormat::Jpeg),
             "png" => Some(OutputFormat::Png),
+            "webp" => Some(OutputFormat::Webp),
             _ => None,
         }
     }
@@ -58,14 +64,16 @@ impl OutputFormat {
     fn same_as(self, input: InputFormat) -> bool {
         matches!(
             (self, input),
-            (OutputFormat::Jpeg, InputFormat::Jpeg) | (OutputFormat::Png, InputFormat::Png)
+            (OutputFormat::Jpeg, InputFormat::Jpeg)
+                | (OutputFormat::Png, InputFormat::Png)
+                | (OutputFormat::Webp, InputFormat::Webp)
         )
     }
 
-    /// 只给 --max-size 时的质量上限：JPEG 超过 95 体积暴涨而肉眼难辨；PNG 从无损开始试
+    /// 只给 --max-size 时的质量上限：有损格式超过 95 体积暴涨而肉眼难辨；PNG 从无损开始试
     fn size_mode_ceiling(self) -> u8 {
         match self {
-            OutputFormat::Jpeg => 95,
+            OutputFormat::Jpeg | OutputFormat::Webp => 95,
             OutputFormat::Png => 100,
         }
     }
@@ -73,7 +81,7 @@ impl OutputFormat {
     /// 未给 --min-quality 时的质量下限：PNG 降质靠减少颜色，低于 30 时只剩几种颜色
     fn size_mode_floor(self) -> u8 {
         match self {
-            OutputFormat::Jpeg => 1,
+            OutputFormat::Jpeg | OutputFormat::Webp => 1,
             OutputFormat::Png => 30,
         }
     }
@@ -82,6 +90,7 @@ impl OutputFormat {
 enum Encoder<'a> {
     Jpeg(JpegJob<'a>),
     Png(PngJob<'a>),
+    Webp(WebpJob<'a>),
 }
 
 impl Encoder<'_> {
@@ -89,6 +98,7 @@ impl Encoder<'_> {
         match self {
             Encoder::Jpeg(job) => job.encode(quality),
             Encoder::Png(job) => job.encode(quality, effort),
+            Encoder::Webp(job) => job.encode(quality),
         }
     }
 
@@ -103,13 +113,13 @@ impl Encoder<'_> {
                     searched
                 })
             }
-            Encoder::Jpeg(_) => Ok(searched),
+            Encoder::Jpeg(_) | Encoder::Webp(_) => Ok(searched),
         }
     }
 
     fn dither(&self) -> Option<f32> {
         match self {
-            Encoder::Jpeg(_) => None,
+            Encoder::Jpeg(_) | Encoder::Webp(_) => None,
             Encoder::Png(job) => Some(job.dither()),
         }
     }
@@ -311,12 +321,12 @@ fn plan(cli: &Cli, input: &Path) -> Result<Plan> {
         .take(512)
         .read_to_end(&mut head)
         .context("读取失败")?;
-    let input_format =
-        decode::sniff(&head).context("不支持的输入格式（仅支持 PNG、JPEG、HEIC）")?;
+    let input_format = decode::sniff(&head).context(decode::UNSUPPORTED_INPUT)?;
 
     let format = match cli.format {
         FormatArg::Jpeg => OutputFormat::Jpeg,
         FormatArg::Png => OutputFormat::Png,
+        FormatArg::Webp => OutputFormat::Webp,
         FormatArg::Auto => cli
             .output
             .as_deref()
@@ -324,6 +334,7 @@ fn plan(cli: &Cli, input: &Path) -> Result<Plan> {
             .unwrap_or(match input_format {
                 InputFormat::Png => OutputFormat::Png,
                 InputFormat::Jpeg | InputFormat::Heic => OutputFormat::Jpeg,
+                InputFormat::Webp => OutputFormat::Webp,
             }),
     };
 
@@ -408,6 +419,9 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
             cli.dither.unwrap_or(1.0),
             icc.as_deref(),
         )),
+        OutputFormat::Webp => {
+            Encoder::Webp(WebpJob::new(width, height, decoded.rgba, icc.as_deref()))
+        }
     };
 
     let (mut data, mut status) = match cli.max_size {
@@ -472,7 +486,7 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
             let searched_len = searched.len();
             let mut data = encoder.refine(quality, searched)?;
             let mut fits = data.len() as u64 <= cap;
-            // JPEG 的估算就是定稿体积，不必复测
+            // JPEG、WebP 的估算就是定稿体积，不必复测
             let mut top = None;
             if is_png {
                 let mut retests = 0;

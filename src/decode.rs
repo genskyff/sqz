@@ -1,14 +1,18 @@
 use std::io::Cursor;
 
 use anyhow::{Context, Result, anyhow, bail};
-use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader};
+use image::metadata::Orientation;
+use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbaImage};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputFormat {
     Png,
     Jpeg,
     Heic,
+    Webp,
 }
+
+pub const UNSUPPORTED_INPUT: &str = "不支持的输入格式（仅支持 PNG、JPEG、HEIC、WebP）";
 
 /// 解码后的 8-bit RGBA 像素，方向已应用到像素上。
 pub struct Decoded {
@@ -42,6 +46,9 @@ pub fn sniff(data: &[u8]) -> Option<InputFormat> {
     if data.starts_with(&[0xFF, 0xD8, 0xFF]) {
         return Some(InputFormat::Jpeg);
     }
+    if data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP" {
+        return Some(InputFormat::Webp);
+    }
     // ISO BMFF：[box size][ftyp][major brand][minor version][compatible brands...]
     if data.len() >= 16 && &data[4..8] == b"ftyp" {
         let box_len = u32::from_be_bytes([data[0], data[1], data[2], data[3]]) as usize;
@@ -63,7 +70,8 @@ pub fn decode(data: &[u8]) -> Result<Decoded> {
         Some(InputFormat::Png) => decode_with_image(data, ImageFormat::Png),
         Some(InputFormat::Jpeg) => decode_with_image(data, ImageFormat::Jpeg),
         Some(InputFormat::Heic) => decode_heic(data),
-        None => bail!("不支持的输入格式（仅支持 PNG、JPEG、HEIC）"),
+        Some(InputFormat::Webp) => decode_webp(data),
+        None => bail!("{UNSUPPORTED_INPUT}"),
     }
 }
 
@@ -101,6 +109,32 @@ fn decode_heic(data: &[u8]) -> Result<Decoded> {
     })
 }
 
+fn decode_webp(data: &[u8]) -> Result<Decoded> {
+    let info = zenwebp::ImageInfo::from_webp(data).map_err(|e| anyhow!("WebP 解析失败：{e}"))?;
+    if info.has_animation {
+        bail!("不支持动图 WebP");
+    }
+    let (rgba, width, height) =
+        zenwebp::oneshot::decode_rgba(data).map_err(|e| anyhow!("WebP 解码失败：{e}"))?;
+    // WebP 解码不会应用 EXIF 方向。规范要求 EXIF 是裸 TIFF，但有的写入方会带上 JPEG 式前缀
+    let orientation = info
+        .exif
+        .as_deref()
+        .map(|exif| exif.strip_prefix(b"Exif\0\0").unwrap_or(exif))
+        .and_then(Orientation::from_exif_chunk)
+        .unwrap_or(Orientation::NoTransforms);
+    let rgba = RgbaImage::from_raw(width, height, rgba).context("WebP 像素数据长度不符")?;
+    let mut img = DynamicImage::ImageRgba8(rgba);
+    img.apply_orientation(orientation);
+    let rgba = img.into_rgba8();
+    Ok(Decoded {
+        width: rgba.width(),
+        height: rgba.height(),
+        rgba: rgba.into_raw(),
+        icc: info.icc_profile,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -113,6 +147,29 @@ mod tests {
         assert_eq!(sniff(heic), Some(InputFormat::Heic));
         let avif = b"\x00\x00\x00\x18ftypavif\x00\x00\x00\x00mif1avif";
         assert_eq!(sniff(avif), None);
+        assert_eq!(
+            sniff(b"RIFF\x24\x00\x00\x00WEBPVP8 "),
+            Some(InputFormat::Webp)
+        );
+        assert_eq!(sniff(b"RIFF\x24\x00\x00\x00WAVEfmt "), None);
         assert_eq!(sniff(b"GIF89a"), None);
+    }
+
+    #[test]
+    fn webp_applies_exif_orientation_with_or_without_prefix() {
+        // 只含 Orientation=6（顺时针转 90°）的小端 TIFF
+        let tiff: &[u8] = b"II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
+        let prefixed = [&b"Exif\0\0"[..], tiff].concat();
+        let rgb = vec![200u8; 8 * 4 * 3];
+        let config = zenwebp::LossyConfig::new();
+        for exif in [tiff, &prefixed[..]] {
+            let webp =
+                zenwebp::EncodeRequest::lossy(&config, &rgb, zenwebp::PixelLayout::Rgb8, 8, 4)
+                    .with_exif(exif)
+                    .encode()
+                    .unwrap();
+            let out = decode(&webp).unwrap();
+            assert_eq!((out.width, out.height), (4, 8));
+        }
     }
 }

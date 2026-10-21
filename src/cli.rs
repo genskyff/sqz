@@ -2,11 +2,11 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 
-/// 压缩 PNG / JPEG / HEIC 图片。
+/// 压缩 PNG / JPEG / HEIC / WebP 图片。
 ///
 /// 默认按质量压缩（-q，默认 75）；给出 --max-size 时，在不超过该大小的前提下反推最高质量。
 ///
-/// 输出格式默认：PNG→PNG，JPEG→JPEG，HEIC→JPEG。
+/// 输出格式默认：PNG→PNG，JPEG→JPEG，HEIC→JPEG，WebP→WebP。
 #[derive(Debug, Parser)]
 #[command(name = "sqz", version)]
 pub struct Cli {
@@ -30,7 +30,7 @@ pub struct Cli {
     #[arg(short, long, value_enum, ignore_case = true, default_value_t = FormatArg::Auto)]
     pub format: FormatArg,
 
-    /// 质量 0-100（JPEG 刻度与 mozjpeg 相近；PNG 为 100 时无损）。与 --max-size 同用时作为质量上限，单用 --max-size 时上限为 JPEG 95 / PNG 100
+    /// 质量 0-100（JPEG 刻度与 mozjpeg 相近；PNG 为 100 时无损；WebP 为有损）。与 --max-size 同用时作为质量上限，单用 --max-size 时上限为 JPEG/WebP 95、PNG 100
     #[arg(short, long, value_parser = clap::value_parser!(u8).range(0..=100))]
     pub quality: Option<u8>,
 
@@ -38,7 +38,7 @@ pub struct Cli {
     #[arg(short = 's', long, value_parser = parse_size)]
     pub max_size: Option<u64>,
 
-    /// --max-size 搜索的质量下限，默认 JPEG 1、PNG 30。PNG 降质靠减少颜色，低于 30 时颜色会严重失真
+    /// --max-size 搜索的质量下限，默认 JPEG/WebP 1、PNG 30。PNG 降质靠减少颜色，低于 30 时颜色会严重失真
     #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
     pub min_quality: Option<u8>,
 
@@ -89,6 +89,7 @@ pub enum FormatArg {
     #[value(alias = "jpg")]
     Jpeg,
     Png,
+    Webp,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -178,6 +179,7 @@ mod tests {
         for name in ["jpeg", "jpg", "JPG", "Jpeg"] {
             assert_eq!(format(name).unwrap(), FormatArg::Jpeg, "{name}");
         }
+        assert_eq!(format("webp").unwrap(), FormatArg::Webp);
         assert!(format("gif").is_err());
     }
 }
