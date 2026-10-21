@@ -3,6 +3,7 @@ use zenjpeg::encoder::{ChromaSubsampling, EncoderConfig, Exif, PixelLayout, Qual
 
 use crate::cli::{Chroma, Rgb};
 use crate::decode::{icc_matches, is_gray, is_opaque};
+use crate::meta::Metadata;
 
 /// 一个 APP1 段能装下的 EXIF 上限。超出时编码器会直接截断，截断的 EXIF 是坏的，宁可不写
 const MAX_EXIF_BYTES: usize = 65527;
@@ -15,8 +16,7 @@ pub struct JpegJob<'a> {
     layout: PixelLayout,
     gray: bool,
     chroma: ChromaSubsampling,
-    icc: Option<&'a [u8]>,
-    exif: Option<&'a [u8]>,
+    meta: Metadata<'a>,
 }
 
 impl<'a> JpegJob<'a> {
@@ -26,11 +26,10 @@ impl<'a> JpegJob<'a> {
         rgba: Vec<u8>,
         chroma: Chroma,
         background: Rgb,
-        icc: Option<&'a [u8]>,
-        exif: Option<&'a [u8]>,
+        meta: Metadata<'a>,
     ) -> Self {
         let opaque = is_opaque(&rgba);
-        let gray = opaque && icc.is_none_or(|p| icc_matches(p, true)) && is_gray(&rgba);
+        let gray = opaque && meta.icc.is_none_or(|p| icc_matches(p, true)) && is_gray(&rgba);
         let (pixels, layout) = if gray {
             let luma = rgba.as_chunks::<4>().0.iter().map(|p| p[0]).collect();
             (luma, PixelLayout::Gray8Srgb)
@@ -49,8 +48,10 @@ impl<'a> JpegJob<'a> {
                 Chroma::C420 => ChromaSubsampling::Quarter,
                 Chroma::C444 => ChromaSubsampling::None,
             },
-            icc: icc.filter(|p| icc_matches(p, gray)),
-            exif: exif.filter(|e| e.len() <= MAX_EXIF_BYTES),
+            meta: Metadata {
+                icc: meta.icc.filter(|p| icc_matches(p, gray)),
+                exif: meta.exif.filter(|e| e.len() <= MAX_EXIF_BYTES),
+            },
         }
     }
 
@@ -65,10 +66,10 @@ impl<'a> JpegJob<'a> {
         // zenjpeg 默认会写 restart marker，部分解码器（如 Claude API）拒收带它的渐进式 JPEG
         .restart_mcu_rows(0);
         let mut request = config.request();
-        if let Some(icc) = self.icc {
+        if let Some(icc) = self.meta.icc {
             request = request.icc_profile(icc);
         }
-        if let Some(exif) = self.exif {
+        if let Some(exif) = self.meta.exif {
             request = request.exif(Exif::raw(exif));
         }
         request
@@ -108,15 +109,11 @@ mod tests {
     fn writes_exif_unless_too_large() {
         let rgba = [200, 100, 50, 255].repeat(8 * 4);
         let encode = |exif: &[u8]| {
-            let job = JpegJob::new(
-                8,
-                4,
-                rgba.clone(),
-                Chroma::C420,
-                Rgb([255; 3]),
-                None,
-                Some(exif),
-            );
+            let meta = Metadata {
+                icc: None,
+                exif: Some(exif),
+            };
+            let job = JpegJob::new(8, 4, rgba.clone(), Chroma::C420, Rgb([255; 3]), meta);
             decode(&job.encode(80).unwrap()).unwrap()
         };
         // 读回时按写入的方向旋转了，说明 EXIF 确实写进去了

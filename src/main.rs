@@ -21,6 +21,7 @@ use serde::Serialize;
 use cli::{Cli, FormatArg};
 use decode::InputFormat;
 use jpeg::JpegJob;
+use meta::Metadata;
 use png::{Effort, PngJob};
 use search::{Fit, Order, climb, fit_size, retest_top};
 use webp::WebpJob;
@@ -419,8 +420,10 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
     // 原图带着要去掉的元数据，就不能拿原图顶替结果
     let strips_metadata =
         (cli.strip_icc && decoded.icc.is_some()) || (cli.strip_exif && decoded.exif.is_some());
-    let icc = if cli.strip_icc { None } else { decoded.icc };
-    let exif = if cli.strip_exif { None } else { decoded.exif };
+    let meta = Metadata {
+        icc: decoded.icc.as_deref().filter(|_| !cli.strip_icc),
+        exif: decoded.exif.as_deref().filter(|_| !cli.strip_exif),
+    };
     let mut encoder = match plan.format {
         OutputFormat::Jpeg => Encoder::Jpeg(JpegJob::new(
             width,
@@ -428,8 +431,7 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
             decoded.rgba,
             cli.chroma,
             cli.background,
-            icc.as_deref(),
-            exif.as_deref(),
+            meta,
         )),
         OutputFormat::Png => Encoder::Png(PngJob::new(
             width,
@@ -437,16 +439,9 @@ fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<
             decoded.rgba,
             cli.colors,
             cli.dither.unwrap_or(1.0),
-            icc.as_deref(),
-            exif.as_deref(),
+            meta,
         )),
-        OutputFormat::Webp => Encoder::Webp(WebpJob::new(
-            width,
-            height,
-            decoded.rgba,
-            icc.as_deref(),
-            exif.as_deref(),
-        )),
+        OutputFormat::Webp => Encoder::Webp(WebpJob::new(width, height, decoded.rgba, meta)),
     };
 
     let (mut data, mut status) = match cli.max_size {

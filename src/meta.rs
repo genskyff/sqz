@@ -3,6 +3,14 @@ use std::ops::Range;
 
 use image::metadata::Orientation;
 
+/// 要写进输出的元数据，EXIF 已按输出调整好
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Metadata<'a> {
+    pub icc: Option<&'a [u8]>,
+    /// 裸 TIFF 格式
+    pub exif: Option<&'a [u8]>,
+}
+
 /// 统一成裸 TIFF：去掉 JPEG 式的 `Exif\0\0` 前缀，丢弃不是 TIFF 的数据。
 pub fn tiff_exif(raw: &[u8]) -> Option<&[u8]> {
     let tiff = raw.strip_prefix(b"Exif\0\0").unwrap_or(raw);
