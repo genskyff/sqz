@@ -5,6 +5,7 @@ on:
   push:
     branches:
       - "**"
+  workflow_call:
 
 permissions:
   contents: read
@@ -25,14 +26,11 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      - name: Run check
-        run: cargo check --locked
-
       - name: Run rustfmt
         run: cargo fmt -- --check
 
       - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo clippy --all-targets --locked -- -D warnings
 
       - name: Run test
         run: cargo test
