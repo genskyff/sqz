@@ -66,6 +66,10 @@ pub struct Cli {
     #[arg(long, value_parser = parse_unit)]
     pub dither: Option<f32>,
 
+    /// 不保留 ICC、EXIF、XMP
+    #[arg(short = 'x', long)]
+    pub strip_all: bool,
+
     /// 不保留 ICC
     #[arg(long)]
     pub strip_icc: bool,
@@ -89,6 +93,17 @@ pub struct Cli {
     /// 并行线程数，默认为 CPU 核数
     #[arg(short, long)]
     pub jobs: Option<usize>,
+}
+
+impl Cli {
+    /// 要去掉的元数据，依次是 ICC、EXIF、XMP
+    pub fn strips(&self) -> (bool, bool, bool) {
+        (
+            self.strip_all || self.strip_icc,
+            self.strip_all || self.strip_exif,
+            self.strip_all || self.strip_xmp,
+        )
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
@@ -212,5 +227,17 @@ mod tests {
         ] {
             assert!(parse(extra).is_err(), "{extra:?}");
         }
+    }
+
+    #[test]
+    fn strip_all_covers_every_kind() {
+        let strips = |extra: &[&str]| {
+            Cli::try_parse_from(["sqz", "a.png"].iter().chain(extra))
+                .unwrap()
+                .strips()
+        };
+        assert_eq!(strips(&[]), (false, false, false));
+        assert_eq!(strips(&["--strip-all"]), (true, true, true));
+        assert_eq!(strips(&["--strip-exif"]), (false, true, false));
     }
 }

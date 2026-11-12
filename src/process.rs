@@ -35,13 +35,14 @@ pub fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Res
     let (width, height) = (decoded.width, decoded.height);
 
     // 原图带着要去掉的元数据，就不能拿原图顶替结果
-    let strips_metadata = (cli.strip_icc && decoded.icc.is_some())
-        || (cli.strip_exif && decoded.exif.is_some())
-        || (cli.strip_xmp && decoded.xmp.is_some());
+    let (strip_icc, strip_exif, strip_xmp) = cli.strips();
+    let strips_metadata = (strip_icc && decoded.icc.is_some())
+        || (strip_exif && decoded.exif.is_some())
+        || (strip_xmp && decoded.xmp.is_some());
     let meta = Metadata {
-        icc: decoded.icc.as_deref().filter(|_| !cli.strip_icc),
-        exif: decoded.exif.as_deref().filter(|_| !cli.strip_exif),
-        xmp: decoded.xmp.as_deref().filter(|_| !cli.strip_xmp),
+        icc: decoded.icc.as_deref().filter(|_| !strip_icc),
+        exif: decoded.exif.as_deref().filter(|_| !strip_exif),
+        xmp: decoded.xmp.as_deref().filter(|_| !strip_xmp),
     };
     let mut encoder = Encoder::new(plan.format, cli, width, height, decoded.rgba, meta);
 
