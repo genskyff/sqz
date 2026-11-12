@@ -31,7 +31,8 @@ fn encode_all(
 pub fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<()> {
     let original = fs::read(input).context("读取失败")?;
     report.input_bytes = Some(original.len() as u64);
-    let decoded = decode::decode(&original)?;
+    let mut decoded = decode::decode(&original)?;
+    let resized_from = cli.max_edge.and_then(|edge| decoded.shrink_to_edge(edge));
     let (width, height) = (decoded.width, decoded.height);
 
     // 原图带着要去掉的元数据，就不能拿原图顶替结果
@@ -69,6 +70,7 @@ pub fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Res
     let kept_original = plan.format.same_as(plan.input_format)
         && !cli.allow_larger
         && !strips_metadata
+        && resized_from.is_none()
         && data.len() >= original.len();
     if kept_original {
         data = original;
@@ -84,6 +86,7 @@ pub fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Res
     }
     report.status = status;
     report.format = Some(plan.format);
+    report.resized = resized_from.map(|from| (from, (width, height)));
     report.output = Some(plan.output.display().to_string());
     report.output_bytes = Some(data.len() as u64);
     Ok(())
@@ -234,4 +237,87 @@ fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
             let _ = fs::remove_file(&tmp);
         })
         .with_context(|| format!("写入 {} 失败", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::ffi::OsString;
+
+    use clap::Parser;
+
+    use super::*;
+    use crate::plan::plan;
+
+    /// 噪点图：体积随像素数和质量明显变化
+    fn noise(format: OutputFormat, width: u32, height: u32, quality: u8) -> Vec<u8> {
+        let mut state = 5u32;
+        let rgba = (0..width * height)
+            .flat_map(|_| {
+                state = state.wrapping_mul(1103515245).wrapping_add(12345) & 0x7fff_ffff;
+                let v = (state >> 16) as u8;
+                [v, v.wrapping_mul(3), 255 - v, 255]
+            })
+            .collect();
+        let cli = Cli::try_parse_from(["sqz", "x"]).unwrap();
+        Encoder::new(format, &cli, width, height, rgba, Metadata::default())
+            .encode(quality, Effort::Final)
+            .unwrap()
+    }
+
+    /// 在各自的临时目录里处理 `input`，返回报告和写出的文件
+    fn run(name: &str, input: &[u8], args: &[&str]) -> (Report, Vec<u8>) {
+        let dir = std::env::temp_dir().join(format!("sqz-{name}-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("in");
+        fs::write(&path, input).unwrap();
+        let args = [OsString::from("sqz"), path.clone().into_os_string()]
+            .into_iter()
+            .chain(args.iter().map(OsString::from));
+        let cli = Cli::try_parse_from(args).unwrap();
+        let plan = plan(&cli, &path).unwrap();
+        let mut report = Report::new(&path);
+        let outcome = process(&cli, &path, &plan, &mut report);
+        let output = fs::read(&plan.output);
+        fs::remove_dir_all(&dir).unwrap();
+        outcome.unwrap();
+        (report, output.unwrap())
+    }
+
+    #[test]
+    fn max_edge_shrinks_before_fitting_max_size() {
+        let input = noise(OutputFormat::Png, 96, 64, 100);
+        let (full, _) = run("edge-size", &input, &["-f", "webp", "-s", "3000"]);
+        let (report, output) = run(
+            "edge-size",
+            &input,
+            &["-f", "webp", "-s", "3000", "-e", "72"],
+        );
+        assert_eq!(report.status, Status::Ok);
+        assert_eq!(report.resized, Some(((96, 64), (72, 48))));
+        assert!(output.len() <= 3000);
+        let decoded = decode::decode(&output).unwrap();
+        assert_eq!((decoded.width, decoded.height), (72, 48));
+        // 缩小后仍要搜索才放得下，但像素少了，同样的上限下质量更高
+        assert!(report.tries > 1);
+        assert!(report.quality > full.quality);
+    }
+
+    #[test]
+    fn resized_output_never_falls_back_to_the_original() {
+        let input = noise(OutputFormat::Jpeg, 64, 48, 1);
+        // 没缩小时照旧：同格式压不小就保留原图
+        for args in [&["-q", "100"][..], &["-q", "100", "-e", "64"]] {
+            let (report, output) = run("edge-original", &input, args);
+            assert_eq!(report.status, Status::KeptOriginal);
+            assert_eq!(report.resized, None);
+            assert_eq!(output, input);
+        }
+
+        let (report, output) = run("edge-original", &input, &["-q", "100", "-e", "60"]);
+        assert!(output.len() >= input.len());
+        assert_eq!(report.status, Status::Ok);
+        assert_eq!(report.resized, Some(((64, 48), (60, 45))));
+        let decoded = decode::decode(&output).unwrap();
+        assert_eq!((decoded.width, decoded.height), (60, 45));
+    }
 }

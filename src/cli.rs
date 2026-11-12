@@ -34,6 +34,10 @@ pub struct Cli {
     #[arg(short, long, conflicts_with_all = ["quality", "max_size", "min_quality", "best_effort", "colors", "dither"])]
     pub convert_only: bool,
 
+    /// 输出长边的像素上限，超过时等比缩小，不放大；长边按转正后的画面算
+    #[arg(short = 'e', long, value_parser = clap::value_parser!(u32).range(1..))]
+    pub max_edge: Option<u32>,
+
     /// 质量 0-100，默认 75，PNG 的 100 是无损；与 -s 同用时是质量上限，默认 JPEG/WebP 95、PNG 100
     #[arg(short, long, value_parser = clap::value_parser!(u8).range(0..=100))]
     pub quality: Option<u8>,
@@ -204,6 +208,26 @@ mod tests {
         }
         assert_eq!(format("webp").unwrap(), FormatArg::Webp);
         assert!(format("gif").is_err());
+    }
+
+    #[test]
+    fn max_edge_takes_a_positive_integer() {
+        let max_edge = |args: &[&str]| {
+            Cli::try_parse_from(["sqz", "a.png"].iter().chain(args)).map(|c| c.max_edge)
+        };
+        assert_eq!(max_edge(&[]).unwrap(), None);
+        assert_eq!(max_edge(&["-e", "1600"]).unwrap(), Some(1600));
+        assert_eq!(max_edge(&["--max-edge", "1"]).unwrap(), Some(1));
+        for arg in [
+            "--max-edge=0",
+            "--max-edge=-1",
+            "--max-edge=1.5",
+            "--max-edge=abc",
+            "--max-edge=",
+        ] {
+            assert!(max_edge(&[arg]).is_err(), "{arg}");
+        }
+        assert!(max_edge(&["-e", "-1"]).is_err());
     }
 
     #[test]

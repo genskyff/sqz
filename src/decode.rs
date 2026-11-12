@@ -1,10 +1,14 @@
+use std::f32::consts::PI;
 use std::io::Cursor;
 
 use anyhow::{Context, Result, anyhow, bail};
 use image::metadata::Orientation;
 use image::{DynamicImage, ImageDecoder, ImageFormat, ImageReader, RgbaImage};
+use rayon::prelude::*;
 
-use crate::meta::{Reorientation, exif_for_output, tiff_exif, xmp_for_output};
+use crate::meta::{
+    Reorientation, exif_for_output, set_exif_dimensions, tiff_exif, xmp_for_output, xmp_for_resized,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputFormat {
@@ -46,6 +50,124 @@ impl Decoded {
             xmp: xmp.and_then(|raw| xmp_for_output(raw, width, height, regions)),
         }
     }
+
+    /// 长边超过 `max_edge` 时等比缩小，元数据里的尺寸跟着改；返回缩小前的尺寸
+    pub fn shrink_to_edge(&mut self, max_edge: u32) -> Option<(u32, u32)> {
+        let source = (self.width, self.height);
+        let long = self.width.max(self.height);
+        if long <= max_edge {
+            return None;
+        }
+        let scaled = |v: u32| {
+            let rounded =
+                (u64::from(v) * u64::from(max_edge) + u64::from(long) / 2) / u64::from(long);
+            (rounded as u32).max(1)
+        };
+        let (width, height) = (scaled(self.width), scaled(self.height));
+        self.rgba = resample(&self.rgba, source, (width, height));
+        (self.width, self.height) = (width, height);
+        if let Some(exif) = &mut self.exif {
+            set_exif_dimensions(exif, width, height);
+        }
+        let scale = f64::from(max_edge) / f64::from(long);
+        self.xmp = self
+            .xmp
+            .as_deref()
+            .and_then(|xmp| xmp_for_resized(xmp, width, height, scale));
+        Some(source)
+    }
+}
+
+/// Lanczos3 缩小，先横后竖，逐行并行；按预乘 alpha 加权，否则透明像素的颜色会渗进边缘
+fn resample(rgba: &[u8], from: (u32, u32), to: (u32, u32)) -> Vec<u8> {
+    let (width, row, new_row) = (from.0 as usize, from.0 as usize * 4, to.0 as usize * 4);
+    let columns = lanczos3_weights(from.0, to.0);
+    let rows = lanczos3_weights(from.1, to.1);
+
+    let mut narrowed = vec![0f32; new_row * from.1 as usize];
+    narrowed
+        .par_chunks_mut(new_row)
+        .zip(rgba.par_chunks(row))
+        .for_each_init(
+            || vec![[0f32; 4]; width],
+            |line, (out, src)| {
+                for (p, s) in line.iter_mut().zip(src.as_chunks::<4>().0) {
+                    let a = f32::from(s[3]);
+                    *p = [
+                        f32::from(s[0]) * a,
+                        f32::from(s[1]) * a,
+                        f32::from(s[2]) * a,
+                        a,
+                    ];
+                }
+                for (o, (left, weights)) in out.as_chunks_mut::<4>().0.iter_mut().zip(&columns) {
+                    let mut sum = [0f32; 4];
+                    for (p, w) in line[*left..].iter().zip(weights) {
+                        for c in 0..4 {
+                            sum[c] += p[c] * w;
+                        }
+                    }
+                    *o = sum;
+                }
+            },
+        );
+
+    let mut out = vec![0u8; new_row * to.1 as usize];
+    out.par_chunks_mut(new_row).zip(&rows).for_each_init(
+        || vec![0f32; new_row],
+        |sums, (out, (top, weights))| {
+            sums.fill(0.0);
+            let lines = narrowed[top * new_row..].chunks_exact(new_row);
+            for (line, w) in lines.zip(weights) {
+                for (sum, v) in sums.iter_mut().zip(line) {
+                    *sum += v * w;
+                }
+            }
+            let pixels = out.as_chunks_mut::<4>().0.iter_mut();
+            for (o, p) in pixels.zip(sums.as_chunks::<4>().0) {
+                let a = p[3];
+                // 加 0.5 再截断即四舍五入，越界的值由 as 截到 0-255；全透明的像素留 0
+                if a >= 0.5 {
+                    let color = |c: f32| (c / a + 0.5) as u8;
+                    *o = [color(p[0]), color(p[1]), color(p[2]), (a + 0.5) as u8];
+                }
+            }
+        },
+    );
+    out
+}
+
+/// 每个输出像素的起始输入下标和归一化权重，只用于缩小；取样位置和窗口同 image 的 Lanczos3
+fn lanczos3_weights(from: u32, to: u32) -> Vec<(usize, Vec<f32>)> {
+    let sinc = |t: f32| {
+        if t == 0.0 {
+            1.0
+        } else {
+            (t * PI).sin() / (t * PI)
+        }
+    };
+    let ratio = from as f32 / to as f32;
+    let support = 3.0 * ratio;
+    (0..to)
+        .map(|i| {
+            let center = (i as f32 + 0.5) * ratio;
+            let left = ((center - support).floor() as usize).min(from as usize - 1);
+            let right = ((center + support).ceil() as usize).clamp(left + 1, from as usize);
+            let mut weights: Vec<f32> = (left..right)
+                .map(|x| (x as f32 - (center - 0.5)) / ratio)
+                .map(|t| {
+                    if t.abs() < 3.0 {
+                        sinc(t) * sinc(t / 3.0)
+                    } else {
+                        0.0
+                    }
+                })
+                .collect();
+            let sum: f32 = weights.iter().sum();
+            weights.iter_mut().for_each(|w| *w /= sum);
+            (left, weights)
+        })
+        .collect()
 }
 
 pub fn sniff(data: &[u8]) -> Option<InputFormat> {
@@ -200,6 +322,8 @@ fn decode_webp(data: &[u8]) -> Result<Decoded> {
 
 #[cfg(test)]
 mod tests {
+    use image::imageops::{self, FilterType};
+
     use super::*;
     use crate::meta::ROTATED_TIFF;
 
@@ -234,5 +358,153 @@ mod tests {
             let out = decode(&webp).unwrap();
             assert_eq!((out.width, out.height), (4, 8));
         }
+    }
+
+    fn bare(width: u32, height: u32, rgba: Vec<u8>) -> Decoded {
+        Decoded {
+            width,
+            height,
+            rgba,
+            icc: None,
+            exif: None,
+            xmp: None,
+        }
+    }
+
+    #[test]
+    fn shrink_to_edge_scales_the_long_edge_down() {
+        for ((width, height), max_edge, expected) in [
+            ((80, 40), 40, Some((40, 20))),
+            ((30, 90), 45, Some((15, 45))),
+            // 短边四舍五入，至少留 1 像素
+            ((100, 33), 50, Some((50, 17))),
+            ((200, 1), 10, Some((10, 1))),
+            // 不超过上限的原样不动，不放大
+            ((80, 40), 80, None),
+            ((80, 40), 200, None),
+        ] {
+            let source: Vec<u8> = (0..width * height)
+                .flat_map(|i| [(i % width) as u8, (i / width) as u8, 128, 255])
+                .collect();
+            let mut img = bare(width, height, source.clone());
+            assert_eq!(
+                img.shrink_to_edge(max_edge),
+                expected.map(|_| (width, height))
+            );
+            let (w, h) = expected.unwrap_or((width, height));
+            assert_eq!((img.width, img.height), (w, h));
+            assert_eq!(img.rgba.len(), (w * h * 4) as usize);
+            assert!(img.rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255));
+            if expected.is_none() {
+                assert_eq!(img.rgba, source);
+            }
+        }
+    }
+
+    /// image 的 Lanczos3，按预乘 alpha 缩放
+    fn reference(rgba: &[u8], from: (u32, u32), to: (u32, u32)) -> Vec<u8> {
+        let img = RgbaImage::from_raw(from.0, from.1, rgba.to_vec()).unwrap();
+        let mut img = DynamicImage::ImageRgba8(img).into_rgba32f();
+        for p in img.pixels_mut() {
+            let [r, g, b, a] = &mut p.0;
+            for c in [r, g, b] {
+                *c *= *a;
+            }
+        }
+        let mut out = imageops::resize(&img, to.0, to.1, FilterType::Lanczos3);
+        for p in out.pixels_mut() {
+            let [r, g, b, a] = &mut p.0;
+            for c in [r, g, b] {
+                *c = (*c / *a).min(1.0);
+            }
+        }
+        DynamicImage::ImageRgba32F(out).into_rgba8().into_raw()
+    }
+
+    #[test]
+    fn resample_matches_image_lanczos3() {
+        let mut state = 5u32;
+        let mut noise = || {
+            state = state.wrapping_mul(1103515245).wrapping_add(12345) & 0x7fff_ffff;
+            (state >> 16) as u8
+        };
+        for (from, to) in [
+            ((67, 41), (23, 14)),
+            ((50, 37), (49, 36)),
+            ((200, 3), (10, 1)),
+        ] {
+            // 一张不透明，一张 alpha 沿横向平缓变化
+            for opaque in [true, false] {
+                let rgba: Vec<u8> = (0..from.0 * from.1)
+                    .flat_map(|i| {
+                        let alpha = if opaque { 255 } else { 40 + i % from.0 % 200 };
+                        [noise(), noise(), noise(), alpha as u8]
+                    })
+                    .collect();
+                let diff = resample(&rgba, from, to)
+                    .iter()
+                    .zip(&reference(&rgba, from, to))
+                    .map(|(a, b)| a.abs_diff(*b))
+                    .max();
+                assert!(diff <= Some(1), "{from:?} → {to:?} {diff:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn shrink_to_edge_keeps_colors_next_to_transparency() {
+        // 左 7 列不透明、右 5 列透明黑：不按预乘 alpha 重采样，交界处会掺进黑色
+        let rgba = (0..12 * 3)
+            .flat_map(|i| {
+                if i % 12 < 7 {
+                    [200, 100, 50, 255]
+                } else {
+                    [0; 4]
+                }
+            })
+            .collect();
+        let mut img = bare(12, 3, rgba);
+        assert_eq!(img.shrink_to_edge(4), Some((12, 3)));
+        let pixels = img.rgba.as_chunks::<4>().0;
+        assert!(pixels.iter().any(|p| (1..255).contains(&p[3])));
+        assert!(
+            pixels
+                .iter()
+                .filter(|p| p[3] > 0)
+                .all(|p| p[..3] == [200, 100, 50])
+        );
+    }
+
+    #[test]
+    fn shrink_to_edge_measures_the_upright_image_and_updates_metadata() {
+        // ImageWidth=80、ImageLength=40、Orientation=6：转正后是 40×80 的竖图
+        const TIFF: &[u8] = b"II*\0\x08\0\0\0\x03\0\
+            \0\x01\x03\0\x01\0\0\0\x50\0\0\0\
+            \x01\x01\x03\0\x01\0\0\0\x28\0\0\0\
+            \x12\x01\x03\0\x01\0\0\0\x06\0\0\0\
+            \0\0\0\0";
+        const XMP: &[u8] = br#"<rdf:Description tiff:Orientation="6" tiff:ImageWidth="80" tiff:ImageLength="40"/>"#;
+        let rgb = vec![200u8; 80 * 40 * 3];
+        let config = zenwebp::LossyConfig::new();
+        let webp = zenwebp::EncodeRequest::lossy(&config, &rgb, zenwebp::PixelLayout::Rgb8, 80, 40)
+            .with_exif(TIFF)
+            .with_xmp(XMP)
+            .encode()
+            .unwrap();
+        let mut out = decode(&webp).unwrap();
+        assert_eq!(out.shrink_to_edge(40), Some((40, 80)));
+        assert_eq!((out.width, out.height), (20, 40));
+
+        let exif = out.exif.unwrap();
+        assert_eq!(
+            Orientation::from_exif_chunk(&exif),
+            Some(Orientation::NoTransforms)
+        );
+        // 两个尺寸条目的值分别在第 18、30 字节
+        assert_eq!((exif[18], exif[30]), (20, 40));
+        assert_eq!(
+            String::from_utf8(out.xmp.unwrap()).unwrap(),
+            r#"<rdf:Description tiff:Orientation="1" tiff:ImageWidth="20" tiff:ImageLength="40"/>"#
+        );
     }
 }

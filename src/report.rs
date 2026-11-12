@@ -19,6 +19,8 @@ pub struct Report {
     pub status: Status,
     pub output: Option<String>,
     pub format: Option<OutputFormat>,
+    /// 缩小前、后的尺寸
+    pub resized: Option<((u32, u32), (u32, u32))>,
     pub input_bytes: Option<u64>,
     pub output_bytes: Option<u64>,
     pub quality: Option<u8>,
@@ -34,6 +36,7 @@ impl Report {
             status: Status::Error,
             output: None,
             format: None,
+            resized: None,
             input_bytes: None,
             output_bytes: None,
             quality: None,
@@ -73,6 +76,9 @@ pub fn print_reports(reports: &[Report]) {
                     human_size(input_bytes),
                     human_size(output_bytes),
                 );
+                if let Some(((from_w, from_h), (w, h))) = r.resized {
+                    line.push_str(&format!("  {from_w}×{from_h} → {w}×{h}"));
+                }
                 if let Some(q) = r.quality {
                     line.push_str(&format!("  q={q}"));
                 }

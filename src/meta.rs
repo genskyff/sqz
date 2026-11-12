@@ -143,10 +143,7 @@ fn reorient_area(
         std::mem::swap(&mut extent_x, &mut extent_y);
     }
     let mirror = |v: &str, extent: f64| -> Option<String> {
-        let mirrored = extent - v.parse::<f64>().ok()?;
-        // 6 位小数对 normalized 坐标已远小于一个像素
-        let text = format!("{mirrored:.6}");
-        Some(text.trim_end_matches('0').trim_end_matches('.').to_owned())
+        Some(coordinate(extent - v.parse::<f64>().ok()?))
     };
     if turn.flip_x {
         x = mirror(&x, extent_x)?;
@@ -164,6 +161,31 @@ fn reorient_area(
         set_values(&mut area, "stArea:h", &h);
     }
     Some(area)
+}
+
+/// 6 位小数对 normalized 坐标已远小于一个像素
+fn coordinate(v: f64) -> String {
+    let text = format!("{v:.6}");
+    text.trim_end_matches('0').trim_end_matches('.').to_owned()
+}
+
+/// 像素等比缩小之后：尺寸改成输出尺寸；按像素写的 MWG 区域乘上 `scale`，normalized 的不受缩放影响
+pub fn xmp_for_resized(xmp: &[u8], width: u32, height: u32, scale: f64) -> Option<Vec<u8>> {
+    let resized = xmp_for_output(xmp, width, height, Reorientation::default())?;
+    let mut xml = String::from_utf8(resized).ok()?;
+    for range in element_ranges(&xml, "mwg-rs:Area").into_iter().rev() {
+        let mut area = xml[range.clone()].to_owned();
+        if value(&area, "stArea:unit") != Some("pixel") {
+            continue;
+        }
+        for name in ["stArea:x", "stArea:y", "stArea:w", "stArea:h", "stArea:d"] {
+            if let Some(v) = value(&area, name).and_then(|v| v.parse::<f64>().ok()) {
+                set_values(&mut area, name, &coordinate(v * scale));
+            }
+        }
+        xml.replace_range(range, &area);
+    }
+    Some(xml.into_bytes())
 }
 
 /// 每个 `<name ...>` 元素的范围：自闭合的到 `/>`，否则到 `</name>`
@@ -240,7 +262,7 @@ const PIXEL_X_DIMENSION: u16 = 0xA002;
 const PIXEL_Y_DIMENSION: u16 = 0xA003;
 
 /// 改 IFD0 的 ImageWidth/ImageLength 和 Exif IFD 的 PixelX/YDimension；只原地改已有条目，偏移不变
-fn set_exif_dimensions(exif: &mut [u8], width: u32, height: u32) {
+pub fn set_exif_dimensions(exif: &mut [u8], width: u32, height: u32) {
     let big_endian = exif.starts_with(b"MM");
     let mut tiff = Tiff {
         data: exif,
@@ -559,6 +581,32 @@ mod tests {
             spec.replace(
                 r#"stDim:w="4288" stDim:h="2848""#,
                 r#"stDim:w="2144" stDim:h="1424""#
+            )
+        );
+    }
+
+    #[test]
+    fn xmp_for_resized_scales_dimensions_and_pixel_regions() {
+        // 存储 4000×3000 的横图，顺时针转 90° 成 3000×4000，再缩到长边 1600
+        let stored = concat!(
+            r#"<rdf:Description tiff:Orientation="6" tiff:ImageWidth="4000" tiff:ImageLength="3000"/>"#,
+            r#"<mwg-rs:AppliedToDimensions stDim:w="4000" stDim:h="3000" stDim:unit="pixel"/>"#,
+            r#"<mwg-rs:Area stArea:x="0.2" stArea:y="0.25" stArea:w="0.06" stArea:h="0.09" stArea:unit="normalized"/>"#,
+            r#"<mwg-rs:Area stArea:x="1000" stArea:y="600" stArea:w="200" stArea:h="100" stArea:unit="pixel"/>"#,
+            r#"<mwg-rs:Area stArea:x="2000" stArea:y="1500" stArea:d="250" stArea:unit="pixel"/>"#,
+        );
+        let upright =
+            xmp_for_output(stored.as_bytes(), 3000, 4000, Reorientation::from_exif(6)).unwrap();
+        let out = xmp_for_resized(&upright, 1200, 1600, 0.4).unwrap();
+        // 转正：(x, y) → (3000 - y, x)，宽高对调；缩小：像素坐标乘 0.4，normalized 的只转不缩
+        assert_eq!(
+            String::from_utf8(out).unwrap(),
+            concat!(
+                r#"<rdf:Description tiff:Orientation="1" tiff:ImageWidth="1200" tiff:ImageLength="1600"/>"#,
+                r#"<mwg-rs:AppliedToDimensions stDim:w="1200" stDim:h="1600" stDim:unit="pixel"/>"#,
+                r#"<mwg-rs:Area stArea:x="0.75" stArea:y="0.2" stArea:w="0.09" stArea:h="0.06" stArea:unit="normalized"/>"#,
+                r#"<mwg-rs:Area stArea:x="960" stArea:y="400" stArea:w="40" stArea:h="80" stArea:unit="pixel"/>"#,
+                r#"<mwg-rs:Area stArea:x="600" stArea:y="800" stArea:d="100" stArea:unit="pixel"/>"#,
             )
         );
     }

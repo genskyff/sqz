@@ -16,6 +16,7 @@ cargo install --git https://github.com/genskyff/sqz --locked
 sqz photo.jpg                            # 默认 q75，输出 photo.min.jpg
 sqz IMG_0001.HEIC -s 500KB               # 转成 JPEG，不超过 500KB
 sqz *.png *.jpg -q 90 -s 1MB -d out      # 质量不高于 90，且不超过 1MB
+sqz photo.jpg -e 1600 -f webp -s 200KB   # 长边缩到 1600 像素，转成 WebP，不超过 200KB
 sqz icon.png -q 100 -o icon.opt.png      # PNG 无损压缩
 sqz shot.png --convert-only -f webp      # 只转格式不降质，输出无损 WebP
 ```
