@@ -1,13 +1,10 @@
 use std::path::Path;
 
-use serde::Serialize;
-
 use crate::encode::OutputFormat;
 
 pub const PNG_JPEG_HINT: &str = "照片类图片可改用 -f jpg";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "snake_case")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Ok,
     /// 同格式压缩后不比原图小，输出为原图副本
@@ -19,30 +16,18 @@ pub enum Status {
     Error,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug)]
 pub struct Report {
     pub input: String,
     pub status: Status,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub format: Option<OutputFormat>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub width: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub height: Option<u32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub input_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub output_bytes: Option<u64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub quality: Option<u8>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub dither: Option<f32>,
     pub tries: u32,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-    pub elapsed_ms: u64,
 }
 
 impl Report {
@@ -52,15 +37,12 @@ impl Report {
             status: Status::Error,
             output: None,
             format: None,
-            width: None,
-            height: None,
             input_bytes: None,
             output_bytes: None,
             quality: None,
             dither: None,
             tries: 0,
             error: None,
-            elapsed_ms: 0,
         }
     }
 
@@ -77,7 +59,7 @@ pub fn human_size(bytes: u64) -> String {
     }
 }
 
-pub fn print_human(reports: &[Report]) {
+pub fn print_reports(reports: &[Report]) {
     for r in reports {
         let message = r.error.as_deref().unwrap_or("未知错误");
         match r.status {

@@ -5,7 +5,6 @@ mod webp;
 use std::path::Path;
 
 use anyhow::Result;
-use serde::Serialize;
 
 use crate::cli::Cli;
 use crate::decode::InputFormat;
@@ -15,8 +14,7 @@ pub use png::Effort;
 use png::PngJob;
 use webp::WebpJob;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
     Jpeg,
     Png,

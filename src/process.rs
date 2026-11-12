@@ -33,8 +33,6 @@ pub fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Res
     report.input_bytes = Some(original.len() as u64);
     let decoded = decode::decode(&original)?;
     let (width, height) = (decoded.width, decoded.height);
-    report.width = Some(width);
-    report.height = Some(height);
 
     // 原图带着要去掉的元数据，就不能拿原图顶替结果
     let strips_metadata = (cli.strip_icc && decoded.icc.is_some())
@@ -192,9 +190,6 @@ fn fit_to_cap(
         Status::BestEffort
     } else {
         report.status = Status::SizeUnreachable;
-        report.quality = Some(quality);
-        report.dither = encoder.dither().filter(|_| quality < 100);
-        report.output_bytes = Some(data.len() as u64);
         let hint = if is_png {
             PNG_JPEG_HINT
         } else {

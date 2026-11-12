@@ -10,7 +10,6 @@ mod search;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::Instant;
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
@@ -19,7 +18,7 @@ use rayon::prelude::*;
 use cli::Cli;
 use plan::{Plan, expand_inputs, explicit_format, path_key, plan};
 use process::process;
-use report::{Report, print_human};
+use report::{Report, print_reports};
 
 fn main() -> ExitCode {
     let mut cli = Cli::parse();
@@ -65,7 +64,6 @@ fn main() -> ExitCode {
     let reports: Vec<Report> = plans
         .par_iter()
         .map(|(input, plan)| {
-            let start = Instant::now();
             let mut report = Report::new(input);
             let outcome = match plan {
                 Ok(plan) => process(&cli, input, plan, &mut report),
@@ -74,19 +72,11 @@ fn main() -> ExitCode {
             if let Err(e) = outcome {
                 report.error = Some(format!("{e:#}"));
             }
-            report.elapsed_ms = start.elapsed().as_millis() as u64;
             report
         })
         .collect();
 
-    if cli.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&reports).expect("报告可序列化")
-        );
-    } else {
-        print_human(&reports);
-    }
+    print_reports(&reports);
 
     if reports.iter().any(Report::failed) {
         ExitCode::FAILURE

@@ -15,8 +15,6 @@ heic = { version = "0.1.6", features = ["parallel"] }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 imagequant = "4.4.1"
 rayon = "1.12.0"
-serde = { version = "1.0.229", features = ["derive"] }
-serde_json = "1.0.154"
 zenjpeg = { version = "0.8.4", default-features = false, features = ["parallel", "yuv"] }
 zenwebp = "0.4.6"
 

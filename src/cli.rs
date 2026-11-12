@@ -89,10 +89,6 @@ pub struct Cli {
     /// 并行线程数，默认为 CPU 核数
     #[arg(short, long)]
     pub jobs: Option<usize>,
-
-    /// 以 JSON 输出结果
-    #[arg(long)]
-    pub json: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
