@@ -2,6 +2,8 @@ use std::path::Path;
 
 use serde::Serialize;
 
+use crate::encode::OutputFormat;
+
 pub const PNG_JPEG_HINT: &str = "PNG 降质只会减少颜色，照片类图片可改用 -f jpg";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -24,7 +26,7 @@ pub struct Report {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub output: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub format: Option<&'static str>,
+    pub format: Option<OutputFormat>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub width: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -103,9 +105,9 @@ pub fn print_human(reports: &[Report]) {
                 }
                 match r.status {
                     Status::KeptOriginal => line.push_str("  （压缩后不更小，保留原图）"),
-                    Status::BestEffort if r.format == Some("png") => line.push_str(&format!(
-                        "  （未达到大小上限，已写出最小结果；{PNG_JPEG_HINT}）"
-                    )),
+                    Status::BestEffort if r.format == Some(OutputFormat::Png) => line.push_str(
+                        &format!("  （未达到大小上限，已写出最小结果；{PNG_JPEG_HINT}）"),
+                    ),
                     Status::BestEffort => line.push_str("  （未达到大小上限，已写出最小结果）"),
                     _ => {}
                 }

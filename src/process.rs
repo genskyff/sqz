@@ -15,19 +15,12 @@ use crate::search::{Fit, Order, climb, fit_size, retest_top};
 const DEFAULT_QUALITY: u8 = 75;
 
 fn search_encode(encoder: &Encoder, qualities: &[u8], parallel: bool) -> Result<Vec<Vec<u8>>> {
-    if let [q] = qualities {
-        return Ok(vec![encoder.encode(*q, Effort::Search)?]);
-    }
+    let encode = |&q: &u8| encoder.encode(q, Effort::Search);
     if parallel {
-        return qualities
-            .par_iter()
-            .map(|&q| encoder.encode(q, Effort::Search))
-            .collect();
+        qualities.par_iter().map(encode).collect()
+    } else {
+        qualities.iter().map(encode).collect()
     }
-    qualities
-        .iter()
-        .map(|&q| encoder.encode(q, Effort::Search))
-        .collect()
 }
 
 pub fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<()> {
@@ -86,7 +79,7 @@ pub fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Res
         write_atomic(&plan.output, &data)?;
     }
     report.status = status;
-    report.format = Some(plan.format.name());
+    report.format = Some(plan.format);
     report.output = Some(plan.output.display().to_string());
     report.output_bytes = Some(data.len() as u64);
     Ok(())
