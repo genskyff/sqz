@@ -19,9 +19,18 @@ sqz *.png *.jpg -q 90 -s 1MB -d out      # 质量不高于 90，且不超过 1MB
 sqz photo.jpg -e 1600 -f webp -s 200KB   # 长边缩到 1600 像素，转成 WebP，不超过 200KB
 sqz icon.png -q 100 -o icon.opt.png      # PNG 无损压缩
 sqz shot.png --convert-only -f webp      # 只转格式不降质，输出无损 WebP
+sqz a.png b.heic -s 300KB --json         # 输出 JSON
 ```
 
 完整参数见 `sqz --help`。
+
+## JSON 输出
+
+`--json` 输出一个数组，每个输入一项，没有值的字段省略：`input`、`output`、`status`、`format`、`width`、`height`、`input_width`、`input_height`、`input_bytes`、`output_bytes`、`quality`、`dither`、`tries`、`error`、`elapsed_ms`。
+
+- `status`：`ok`、`kept_original`、`best_effort`、`size_unreachable`、`error`
+- `size_unreachable` 时不写文件，`output_bytes` 是能压到的最小值
+- `width`、`height` 是输出尺寸，`input_width`、`input_height` 是转正后、`-e` 缩小前的尺寸
 
 ## 说明
 

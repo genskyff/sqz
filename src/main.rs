@@ -10,6 +10,7 @@ mod search;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
+use std::time::Instant;
 
 use anyhow::{Result, anyhow};
 use clap::Parser;
@@ -18,7 +19,7 @@ use rayon::prelude::*;
 use cli::Cli;
 use plan::{Plan, expand_inputs, explicit_format, path_key, plan};
 use process::process;
-use report::{Report, print_reports};
+use report::{Report, print_human, print_json};
 
 #[cfg_attr(feature = "hotpath", hotpath::main)]
 fn main() -> ExitCode {
@@ -65,6 +66,7 @@ fn main() -> ExitCode {
     let reports: Vec<Report> = plans
         .par_iter()
         .map(|(input, plan)| {
+            let start = Instant::now();
             let mut report = Report::new(input);
             let outcome = match plan {
                 Ok(plan) => process(&cli, input, plan, &mut report),
@@ -73,11 +75,16 @@ fn main() -> ExitCode {
             if let Err(e) = outcome {
                 report.error = Some(format!("{e:#}"));
             }
+            report.elapsed_ms = start.elapsed().as_millis() as u64;
             report
         })
         .collect();
 
-    print_reports(&reports);
+    if cli.json {
+        print_json(&reports);
+    } else {
+        print_human(&reports);
+    }
 
     if reports.iter().any(Report::failed) {
         ExitCode::FAILURE

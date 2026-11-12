@@ -33,8 +33,12 @@ pub fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Res
     let original = fs::read(input).context("读取失败")?;
     report.input_bytes = Some(original.len() as u64);
     let mut decoded = decode::decode(&original)?;
-    let resized_from = cli.max_edge.and_then(|edge| decoded.shrink_to_edge(edge));
+    (report.input_width, report.input_height) = (Some(decoded.width), Some(decoded.height));
+    let resized = cli
+        .max_edge
+        .is_some_and(|edge| decoded.shrink_to_edge(edge).is_some());
     let (width, height) = (decoded.width, decoded.height);
+    (report.width, report.height) = (Some(width), Some(height));
 
     // 原图带着要去掉的元数据，就不能拿原图顶替结果
     let (strip_icc, strip_exif, strip_xmp) = cli.strips();
@@ -71,7 +75,7 @@ pub fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Res
     let kept_original = plan.format.same_as(plan.input_format)
         && !cli.allow_larger
         && !strips_metadata
-        && resized_from.is_none()
+        && !resized
         && data.len() >= original.len();
     if kept_original {
         data = original;
@@ -87,7 +91,6 @@ pub fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Res
     }
     report.status = status;
     report.format = Some(plan.format);
-    report.resized = resized_from.map(|from| (from, (width, height)));
     report.output = Some(plan.output.display().to_string());
     report.output_bytes = Some(data.len() as u64);
     Ok(())
@@ -211,6 +214,9 @@ fn fit_to_cap(
         Status::BestEffort
     } else {
         report.status = Status::SizeUnreachable;
+        report.quality = Some(quality);
+        report.dither = encoder.dither().filter(|_| quality < 100);
+        report.output_bytes = Some(data.len() as u64);
         let hint = if is_png {
             PNG_JPEG_HINT
         } else {
@@ -286,6 +292,14 @@ mod tests {
         (report, output.unwrap())
     }
 
+    /// 报告里缩小前、后的尺寸
+    fn sizes(report: &Report) -> [Option<(u32, u32)>; 2] {
+        [
+            report.input_width.zip(report.input_height),
+            report.width.zip(report.height),
+        ]
+    }
+
     #[test]
     fn max_edge_shrinks_before_fitting_max_size() {
         let input = noise(OutputFormat::Png, 96, 64, 100);
@@ -296,7 +310,7 @@ mod tests {
             &["-f", "webp", "-s", "3000", "-e", "72"],
         );
         assert_eq!(report.status, Status::Ok);
-        assert_eq!(report.resized, Some(((96, 64), (72, 48))));
+        assert_eq!(sizes(&report), [Some((96, 64)), Some((72, 48))]);
         assert!(output.len() <= 3000);
         let decoded = decode::decode(&output).unwrap();
         assert_eq!((decoded.width, decoded.height), (72, 48));
@@ -312,14 +326,14 @@ mod tests {
         for args in [&["-q", "100"][..], &["-q", "100", "-e", "64"]] {
             let (report, output) = run("edge-original", &input, args);
             assert_eq!(report.status, Status::KeptOriginal);
-            assert_eq!(report.resized, None);
+            assert_eq!(sizes(&report), [Some((64, 48)); 2]);
             assert_eq!(output, input);
         }
 
         let (report, output) = run("edge-original", &input, &["-q", "100", "-e", "60"]);
         assert!(output.len() >= input.len());
         assert_eq!(report.status, Status::Ok);
-        assert_eq!(report.resized, Some(((64, 48), (60, 45))));
+        assert_eq!(sizes(&report), [Some((64, 48)), Some((60, 45))]);
         let decoded = decode::decode(&output).unwrap();
         assert_eq!((decoded.width, decoded.height), (60, 45));
     }
