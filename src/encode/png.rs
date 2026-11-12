@@ -11,7 +11,7 @@ use super::{icc_matches, is_gray, is_opaque};
 use crate::meta::Metadata;
 
 /// 搜索时有损图用较快的 deflate 档位估算体积，定稿时再用最高档压一遍并取更小者。
-/// 无损图的估算靠不住，搜索时对着大小上限 `cap` 直接压到定稿，见 [`compress`]。
+/// 无损图估算不准，搜索时也压到定稿，超过 `cap` 就停。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effort {
     Search { cap: u64 },
@@ -22,11 +22,10 @@ pub enum Effort {
 const PROBE_LEVEL: u8 = 6;
 const BEST_LEVEL: u8 = 9;
 
-/// 试探档位的结果比最高档大出多少，要看数据有多好压。压缩比不到这个倍数的（照片、带噪点的图）
-/// 实测最多大 14%，最高档又慢；达到的（截图、色块图）可大出一倍以上，压起来也快。经验值，样本有限。
+/// 压缩比达到这个倍数的数据，最高档还能小很多且压得快，总是值得再压一遍。经验值，样本有限。
 const COMPRESSIBLE_RATIO: usize = 16;
 
-/// 不好压的数据，试探结果超出上限这个倍数时最高档也救不回来。经验值，样本有限。
+/// 压缩比不到 `COMPRESSIBLE_RATIO` 时，试探结果超出上限这个倍数就不用最高档再压。经验值，样本有限。
 const HOPELESS_MARGIN: f64 = 1.3;
 
 /// 只收下 `limit` 字节，再多就报错，借此让压缩中途停下。
@@ -49,7 +48,7 @@ impl Write for Capped {
     }
 }
 
-/// PNG 的 IDAT、iCCP 都要求 zlib 包装（RFC 1950）。输出一超过 `limit` 字节就中止，返回 None。
+/// PNG 的 IDAT、iCCP 都要求 zlib 包装。输出一超过 `limit` 字节就中止，返回 None。
 fn zlib_within(data: &[u8], level: u8, limit: usize) -> Option<Vec<u8>> {
     let sink = Capped {
         out: Vec::new(),
@@ -78,7 +77,7 @@ struct Quantized {
     indices: Vec<u8>,
 }
 
-/// 准备好的 PNG 编码输入，可按不同质量重复编码。可跨线程共享，搜索时并行试探。
+/// 可跨线程共享，搜索时并行试探。
 pub struct PngJob<'a> {
     width: u32,
     height: u32,
@@ -125,8 +124,6 @@ impl<'a> PngJob<'a> {
         self.dither = 0.0;
     }
 
-    /// quality 为 100 时无损，否则用 imagequant 量化为调色板图。
-    /// `effort` 决定 deflate 档位，见 [`Effort`]。
     pub fn encode(&self, quality: u8, effort: Effort) -> Result<Vec<u8>> {
         if quality >= 100 {
             return Ok(self.lossless(effort));
@@ -198,7 +195,6 @@ impl<'a> PngJob<'a> {
         if let Some((palette, indices)) = exact_palette(&self.rgba) {
             candidates.push(Raster::indexed(&palette, &indices, self.width));
         }
-        // 搜索时也压到定稿：放得下的就是最终结果，放不下的只多付到超限为止的那一段
         let best_within = match effort {
             Effort::Search { cap } => usize::try_from(cap).unwrap_or(usize::MAX),
             Effort::Final => usize::MAX,
@@ -309,7 +305,6 @@ impl Raster {
     }
 }
 
-/// 图中不超过 256 种颜色时，返回精确调色板与索引。
 fn exact_palette(rgba: &[u8]) -> Option<(Vec<[u8; 4]>, Vec<u8>)> {
     let mut lookup: HashMap<[u8; 4], u8> = HashMap::new();
     let mut palette = Vec::new();
@@ -340,7 +335,7 @@ fn exact_palette(rgba: &[u8]) -> Option<(Vec<[u8; 4]>, Vec<u8>)> {
 #[derive(Debug, Clone, Copy)]
 enum Filter {
     Fixed(u8),
-    /// 每行选绝对值和最小的滤波器（libpng 的经典启发式）
+    /// 每行选绝对值和最小的滤波器
     MinSum,
 }
 
@@ -354,10 +349,10 @@ const ALL_FILTERS: [Filter; 6] = [
 ];
 const INDEXED_FILTERS: [Filter; 2] = [Filter::Fixed(0), Filter::MinSum];
 
-/// 试各滤波策略，返回最小的 zlib 数据（IDAT 内容）。
+/// 试各滤波策略，返回最小的 zlib 数据。
 ///
-/// `best_within` 为 None 时只按试探档位估算。否则再用最高档压一遍，取不超过这个字节数、
-/// 且比试探结果小的那个；压到一半超了就停，不好压的数据离这个字节数太远时干脆不压。
+/// `best_within` 为 None 时只按试探档位估算；否则再用最高档压一遍，结果不超过这个字节数
+/// 且比试探结果小才采用。
 fn compress(raster: &Raster, best_within: Option<usize>) -> Vec<u8> {
     let filters: &[Filter] = if raster.color_type == COLOR_INDEXED || raster.bit_depth < 8 {
         &INDEXED_FILTERS
@@ -563,8 +558,8 @@ mod tests {
     fn lossless_search_settles_within_cap() {
         let job = PngJob::new(480, 360, tiles(480, 360), 256, 1.0, Metadata::default());
         let best = job.encode(100, Effort::Final).unwrap();
-        // 上限为 0 时最高档一开始就中止，拿到的是试探档位的结果；它得比定稿大出
-        // HOPELESS_MARGIN 以上，才说明下面的结论不是靠余量碰出来的
+        // 上限为 0 时最高档立刻中止，得到试探结果；它比定稿大出 HOPELESS_MARGIN 以上，
+        // 下面的结论才不是靠余量得来的
         let estimate = job.encode(100, Effort::Search { cap: 0 }).unwrap();
         assert!(estimate.len() as f64 > best.len() as f64 * HOPELESS_MARGIN);
 

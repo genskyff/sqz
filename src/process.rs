@@ -90,7 +90,6 @@ pub fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Res
     Ok(())
 }
 
-/// --max-size 的编码：搜索不超过 `cap` 的最高质量；达不到且没加 --best-effort 时报错。
 fn fit_to_cap(
     cli: &Cli,
     format: OutputFormat,
@@ -154,7 +153,7 @@ fn fit_to_cap(
     // JPEG、WebP 的估算就是定稿体积，不必复测
     let mut top = None;
     if is_png {
-        // 无损在搜索时已有定论，只复测有损里最高的 99；上限本身有损时复测它和下面一档
+        // 无损的结论搜索时已确定，上限是无损时只复测 99；上限有损时复测它和下一档
         let lowest = if split { 99 } else { ceiling.saturating_sub(1) };
         let candidates = lowest.max(min_quality)..=ceiling.min(99);
         let gap = searched_len as f64 / data.len() as f64;
@@ -177,7 +176,7 @@ fn fit_to_cap(
             (quality, data) = (q, d);
             fits = true;
         }
-        // 定稿比估算小，更高的质量也可能放得下；无损在搜索时已有定论，只在有损区间里爬
+        // 定稿比估算小，更高的质量也可能放得下；只在有损区间里爬
         None if fits && data.len() < searched_len => {
             let (q, d, tries) = climb(quality, data, search_ceiling.min(99), cap, |q| {
                 encoder.encode(q, Effort::Final)

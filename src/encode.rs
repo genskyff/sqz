@@ -144,7 +144,6 @@ impl<'a> Encoder<'a> {
         }
     }
 
-    /// 关掉 PNG 抖动；返回是否真的有所改变。
     pub fn drop_dither(&mut self) -> bool {
         match self {
             Encoder::Png(job) if job.dither() > 0.0 => {

@@ -36,7 +36,6 @@ pub struct Reorientation {
 }
 
 impl Reorientation {
-    /// EXIF Orientation 1-8 表示的变换，其他值当作不变
     pub fn from_exif(value: u8) -> Self {
         let (transpose, flip_x, flip_y) = match value {
             2 => (false, true, false),
@@ -55,7 +54,6 @@ impl Reorientation {
         }
     }
 
-    /// 先做 self 再做 next
     pub fn then(self, next: Self) -> Self {
         let (flip_x, flip_y) = if next.transpose {
             (self.flip_y, self.flip_x)
@@ -232,7 +230,6 @@ fn value<'x>(xml: &'x str, name: &str) -> Option<&'x str> {
     value_range(xml, name, 0).map(|range| xml[range].trim())
 }
 
-/// 把 `name` 的每处值都换成 `value`
 fn set_values(xml: &mut String, name: &str, value: &str) {
     let mut from = 0;
     while let Some(range) = value_range(xml, name, from) {
@@ -275,7 +272,6 @@ fn set_exif_dimensions(exif: &mut [u8], width: u32, height: u32) {
     }
 }
 
-/// 裸 TIFF 数据的读写，越界读当作没有。
 struct Tiff<'a> {
     data: &'a mut [u8],
     big_endian: bool,
@@ -352,7 +348,6 @@ impl Tiff<'_> {
 #[cfg(test)]
 pub const ROTATED_TIFF: &[u8] = b"II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
 
-/// 只含 tiff:Orientation=6 的 XMP
 #[cfg(test)]
 pub const ROTATED_XMP: &[u8] = br#"<x:xmpmeta xmlns:x="adobe:ns:meta/"><rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"><rdf:Description xmlns:tiff="http://ns.adobe.com/tiff/1.0/" tiff:Orientation="6"/></rdf:RDF></x:xmpmeta>"#;
 
@@ -488,7 +483,6 @@ mod tests {
         assert_eq!(exif(4).then(exif(6)), exif(5));
     }
 
-    /// Reorientation 对点的映射要和 image 实际转像素的结果一致
     #[test]
     fn reorientation_matches_image_apply_orientation() {
         use image::{DynamicImage, Rgba, RgbaImage};

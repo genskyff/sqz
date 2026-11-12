@@ -9,7 +9,6 @@ use crate::meta::Metadata;
 const MAX_EXIF_BYTES: usize = 65527;
 const MAX_XMP_BYTES: usize = 65504;
 
-/// 准备好的 JPEG 编码输入，可按不同质量重复编码。
 pub struct JpegJob<'a> {
     width: u32,
     height: u32,
@@ -83,7 +82,6 @@ impl<'a> JpegJob<'a> {
     }
 }
 
-/// 把 RGBA 按 alpha 合成到纯色底上，输出 RGB。
 fn flatten(rgba: &[u8], bg: [u8; 3]) -> Vec<u8> {
     let mut out = Vec::with_capacity(rgba.len() / 4 * 3);
     for p in rgba.as_chunks::<4>().0 {

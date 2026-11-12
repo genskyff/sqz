@@ -4,7 +4,6 @@ use zenwebp::{EncodeRequest, LosslessConfig, LossyConfig, PixelLayout};
 use super::{icc_matches, is_opaque};
 use crate::meta::Metadata;
 
-/// 准备好的 WebP 编码输入，可按不同质量重复编码。
 pub struct WebpJob<'a> {
     width: u32,
     height: u32,

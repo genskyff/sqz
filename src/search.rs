@@ -16,7 +16,6 @@ pub struct SearchResult {
     pub probes: Vec<(u8, usize)>,
 }
 
-/// 第一轮怎么试，以及之后怎么在剩下的区间里找。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Order {
     /// 先试上限，失败后在下面二分。适合体积随质量大致单调的编码，如 JPEG
@@ -32,8 +31,7 @@ pub enum Order {
 /// 上限不超过下限体积的这个倍数时，答案多半贴着下限，倍增比二分省。经验值，样本有限。
 const GALLOP_RATIO: f64 = 3.0;
 
-/// 估算体积按实测比例折算后仍在上限的这个倍数以内，才值得用定稿档位复测。
-/// 同一张图上，估算比定稿大出的比例在不同质量之间的出入实测约 25%。经验值，样本有限。
+/// 估算体积折算后仍在上限的这个倍数以内，才值得用定稿档位复测。经验值，样本有限。
 const RETEST_MARGIN: f64 = 1.3;
 
 /// 在 [lo, hi] 中找输出不超过 `cap` 字节的最高质量。
@@ -117,8 +115,8 @@ pub fn climb(
 /// 且估算不超过 `cap × RETEST_MARGIN` 的质量；没试探过的质量借用试探过的最近更高
 /// 质量的估算。`encode` 应按定稿档位编码。
 ///
-/// 估算偏大多少因图而异（照片 2% 左右，色块图可达一倍以上），所以先除以 `gap`
-/// 再比较：它是这张图上已经定稿的那个质量的估算体积与定稿体积之比。
+/// 估算偏大多少因图而异，比较前先除以 `gap`：这张图上已定稿的那个质量的估算体积
+/// 与定稿体积之比。
 pub fn retest_top(
     candidates: RangeInclusive<u8>,
     above: Option<u8>,
@@ -150,7 +148,6 @@ pub fn retest_top(
 
 type Sample = (u8, Vec<u8>);
 
-/// 搜索过程中已知的两条边界。
 struct Search<'a> {
     encode: &'a mut dyn FnMut(u8) -> Result<Vec<u8>>,
     cap: u64,
@@ -219,7 +216,6 @@ impl<'a> Search<'a> {
         Ok(())
     }
 
-    /// 从已知可行的质量往上倍增步长，直到超限或到达 `ceiling`。
     fn gallop(&mut self, ceiling: u8) -> Result<()> {
         let mut step = 1;
         while let Some((best, _)) = &self.best {
@@ -257,7 +253,6 @@ mod tests {
     const PARALLEL: Order = Order::SplitCeiling { parallel: true };
     const SEQUENTIAL: Order = Order::SplitCeiling { parallel: false };
 
-    /// 模拟编码器：体积 = 质量 × 10 字节
     fn linear(q: u8) -> Vec<u8> {
         vec![0; usize::from(q) * 10]
     }
@@ -450,7 +445,6 @@ mod tests {
         vec![0; size]
     }
 
-    /// 搜索时的估算体积，比定稿大 20%
     fn u_estimate(qs: &[u8]) -> Result<Vec<Vec<u8>>> {
         Ok(qs
             .iter()

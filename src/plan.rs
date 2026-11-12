@@ -83,7 +83,6 @@ pub fn plan(cli: &Cli, input: &Path) -> Result<Plan> {
     })
 }
 
-/// -f 优先，其次是 -o 的扩展名
 pub fn explicit_format(cli: &Cli) -> Option<OutputFormat> {
     match cli.format {
         FormatArg::Jpeg => Some(OutputFormat::Jpeg),
@@ -107,7 +106,6 @@ fn output_path(cli: &Cli, input: &Path, format: OutputFormat) -> PathBuf {
         .as_deref()
         .unwrap_or(if cli.out_dir.is_some() { "" } else { ".min" });
     let stem = input.file_stem().unwrap_or_default().to_string_lossy();
-    // 原扩展名与输出格式一致时沿用原写法（如 .jpeg、.JPG），否则用标准扩展名
     let ext = match input.extension() {
         Some(ext) if OutputFormat::from_path(input) == Some(format) => ext.to_string_lossy(),
         _ => format.extension().into(),

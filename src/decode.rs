@@ -50,7 +50,6 @@ impl Decoded {
     }
 }
 
-/// 按文件头识别格式，不看扩展名。
 pub fn sniff(data: &[u8]) -> Option<InputFormat> {
     if data.starts_with(b"\x89PNG\r\n\x1a\n") {
         return Some(InputFormat::Png);
