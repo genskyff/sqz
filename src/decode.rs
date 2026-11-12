@@ -50,22 +50,6 @@ impl Decoded {
     }
 }
 
-pub fn is_opaque(rgba: &[u8]) -> bool {
-    rgba.as_chunks::<4>().0.iter().all(|p| p[3] == 255)
-}
-
-pub fn is_gray(rgba: &[u8]) -> bool {
-    rgba.as_chunks::<4>()
-        .0
-        .iter()
-        .all(|p| p[0] == p[1] && p[1] == p[2])
-}
-
-/// ICC 头部第 16-19 字节是颜色空间；只有和输出颜色模型一致的配置才能嵌入。
-pub fn icc_matches(icc: &[u8], gray: bool) -> bool {
-    icc.get(16..20) == Some(if gray { &b"GRAY"[..] } else { &b"RGB "[..] })
-}
-
 /// 按文件头识别格式，不看扩展名。
 pub fn sniff(data: &[u8]) -> Option<InputFormat> {
     if data.starts_with(b"\x89PNG\r\n\x1a\n") {

@@ -7,7 +7,7 @@ use flate2::write::ZlibEncoder;
 use rayon::prelude::*;
 use std::io::Write;
 
-use crate::decode::{icc_matches, is_gray, is_opaque};
+use super::{icc_matches, is_gray, is_opaque};
 use crate::meta::Metadata;
 
 /// 搜索时用较快的 deflate 档位估算，定稿时再用最高档压一遍并取更小者。

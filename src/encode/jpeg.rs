@@ -1,8 +1,8 @@
 use anyhow::{Result, anyhow};
 use zenjpeg::encoder::{ChromaSubsampling, EncoderConfig, Exif, PixelLayout, Quality};
 
+use super::{icc_matches, is_gray, is_opaque};
 use crate::cli::{Chroma, Rgb};
-use crate::decode::{icc_matches, is_gray, is_opaque};
 use crate::meta::Metadata;
 
 /// 一个 APP1 段能装下的 EXIF、XMP 上限。超出时编码器会直接截断，截断的数据是坏的，宁可不写
