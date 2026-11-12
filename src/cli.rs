@@ -31,7 +31,7 @@ pub struct Cli {
     pub format: FormatArg,
 
     /// 只转格式不降质：PNG、WebP 无损，JPEG 用 q100；须用 -f 或 -o 的扩展名指定格式
-    #[arg(long, conflicts_with_all = ["quality", "max_size", "min_quality", "best_effort", "colors", "dither"])]
+    #[arg(short, long, conflicts_with_all = ["quality", "max_size", "min_quality", "best_effort", "colors", "dither"])]
     pub convert_only: bool,
 
     /// 质量 0-100，默认 75，PNG 的 100 是无损；与 -s 同用时是质量上限，默认 JPEG/WebP 95、PNG 100
@@ -43,11 +43,11 @@ pub struct Cli {
     pub max_size: Option<u64>,
 
     /// -s 搜索的质量下限，默认 JPEG/WebP 1、PNG 30；PNG 低于 30 颜色严重失真
-    #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
+    #[arg(short = 'Q', long, value_parser = clap::value_parser!(u8).range(0..=100))]
     pub min_quality: Option<u8>,
 
     /// 达不到 -s 时仍写出最小的结果，默认报错不写
-    #[arg(long)]
+    #[arg(short, long)]
     pub best_effort: bool,
 
     /// JPEG 色度采样
@@ -83,7 +83,7 @@ pub struct Cli {
     pub allow_larger: bool,
 
     /// 允许覆盖已有的输出文件，包括输入文件本身
-    #[arg(long)]
+    #[arg(short = 'y', long)]
     pub overwrite: bool,
 
     /// 并行线程数，默认为 CPU 核数
