@@ -34,15 +34,14 @@ const GALLOP_RATIO: f64 = 3.0;
 /// 估算体积折算后仍在上限的这个倍数以内，才值得用定稿档位复测。经验值，样本有限。
 const RETEST_MARGIN: f64 = 1.3;
 
-/// 在 [lo, hi] 中找输出不超过 `cap` 字节的最高质量。
-///
-/// 第一轮的候选见 [`Order`]，交给 `encode` 一起编码。体积随质量大致单调，偶有回落
-/// 也不会选中超限的结果：只记录真正满足上限的最高质量。
+/// 在 [lo, hi] 中找输出不超过 `cap` 字节的最高质量；体积偶有回落也只认真正不超限的。
+/// `lookahead` 时把接下来可能要试的质量一并交给 `encode` 并行编码，试探顺序和结果不变。
 pub fn fit_size(
     lo: u8,
     hi: u8,
     cap: u64,
     order: Order,
+    lookahead: bool,
     mut encode: impl FnMut(&[u8]) -> Result<Vec<Vec<u8>>>,
 ) -> Result<SearchResult> {
     let lo = lo.min(hi);
@@ -55,11 +54,7 @@ pub fn fit_size(
     first.dedup();
     let batch = encode(&first)?;
 
-    let mut encode_one = |q: u8| -> Result<Vec<u8>> {
-        let mut batch = encode(&[q])?;
-        Ok(batch.pop().expect("单个质量只应有一条结果"))
-    };
-    let mut search = Search::new(&mut encode_one, cap);
+    let mut search = Search::new(&mut encode, cap, lookahead);
     search.tries = first.len() as u32;
     for (q, data) in first.into_iter().zip(batch) {
         search.record(q, data);
@@ -76,7 +71,7 @@ pub fn fit_size(
             }
         }
         Order::SplitCeiling { parallel: false } => {
-            let floor_fails = search.best.is_none() && lo < hi && !search.probe(lo)?;
+            let floor_fails = search.best.is_none() && lo < hi && !search.probe(lo, [None; 2])?;
             if !floor_fails {
                 search.bisect(lo, hi)?;
             }
@@ -95,9 +90,10 @@ pub fn climb(
     data: Vec<u8>,
     hi: u8,
     cap: u64,
-    mut encode: impl FnMut(u8) -> Result<Vec<u8>>,
+    lookahead: bool,
+    mut encode: impl FnMut(&[u8]) -> Result<Vec<Vec<u8>>>,
 ) -> Result<(u8, Vec<u8>, u32)> {
-    let mut search = Search::new(&mut encode, cap);
+    let mut search = Search::new(&mut encode, cap, lookahead);
     search.record(quality, data);
     search.gallop(hi)?;
     search.bisect(quality, hi)?;
@@ -147,10 +143,15 @@ pub fn retest_top(
 }
 
 type Sample = (u8, Vec<u8>);
+/// 结果与质量一一对应
+type Encode<'a> = &'a mut dyn FnMut(&[u8]) -> Result<Vec<Vec<u8>>>;
 
 struct Search<'a> {
-    encode: &'a mut dyn FnMut(u8) -> Result<Vec<u8>>,
+    encode: Encode<'a>,
     cap: u64,
+    lookahead: bool,
+    /// 预读编码好、还没轮到的
+    ahead: Vec<Sample>,
     tries: u32,
     probes: Vec<(u8, usize)>,
     /// 不超限的最高质量
@@ -160,10 +161,12 @@ struct Search<'a> {
 }
 
 impl<'a> Search<'a> {
-    fn new(encode: &'a mut dyn FnMut(u8) -> Result<Vec<u8>>, cap: u64) -> Self {
+    fn new(encode: Encode<'a>, cap: u64, lookahead: bool) -> Self {
         Self {
             encode,
             cap,
+            lookahead,
+            ahead: Vec::new(),
             tries: 0,
             probes: Vec::new(),
             best: None,
@@ -184,8 +187,21 @@ impl<'a> Search<'a> {
         fits
     }
 
-    fn probe(&mut self, q: u8) -> Result<bool> {
-        let data = (self.encode)(q)?;
+    /// `next` 是 `q` 不超限、超限时各自接着要试的质量
+    fn probe(&mut self, q: u8, next: [Option<u8>; 2]) -> Result<bool> {
+        let data = match self.ahead.iter().position(|(a, _)| *a == q) {
+            Some(i) => self.ahead.swap_remove(i).1,
+            None => {
+                let mut batch = vec![q];
+                if self.lookahead {
+                    batch.extend(next.into_iter().flatten());
+                }
+                let mut encoded = (self.encode)(&batch)?.into_iter();
+                let data = encoded.next().expect("每个质量都应有结果");
+                self.ahead = batch.into_iter().skip(1).zip(encoded).collect();
+                data
+            }
+        };
         self.tries += 1;
         Ok(self.record(q, data))
     }
@@ -205,12 +221,12 @@ impl<'a> Search<'a> {
 
     fn bisect(&mut self, floor: u8, ceiling: u8) -> Result<()> {
         let (mut l, mut h) = self.untested(floor, ceiling);
-        while l <= h {
-            let mid = l + (h - l) / 2;
-            if self.probe(mid as u8)? {
-                l = mid + 1;
+        while let Some(mid) = midpoint(l, h) {
+            let m = i32::from(mid);
+            if self.probe(mid, [midpoint(m + 1, h), midpoint(l, m - 1)])? {
+                l = m + 1;
             } else {
-                h = mid - 1;
+                h = m - 1;
             }
         }
         Ok(())
@@ -224,7 +240,13 @@ impl<'a> Search<'a> {
             if best >= high {
                 break;
             }
-            if !self.probe((best + step).min(high) as u8)? {
+            let q = (best + step).min(high);
+            // 不超限接着倍增；超限时调用方会在 (best, q) 之间二分
+            let next = [
+                (q < high).then(|| (q + step * 2).min(high) as u8),
+                midpoint(best + 1, q - 1),
+            ];
+            if !self.probe(q as u8, next)? {
                 break;
             }
             step *= 2;
@@ -244,6 +266,10 @@ impl<'a> Search<'a> {
             probes: self.probes,
         }
     }
+}
+
+fn midpoint(l: i32, h: i32) -> Option<u8> {
+    (l <= h).then(|| (l + (h - l) / 2) as u8)
 }
 
 #[cfg(test)]
@@ -276,79 +302,79 @@ mod tests {
 
     #[test]
     fn ceiling_fits_in_one_try() {
-        let r = fit_size(1, 80, 10_000, Order::Ceiling, single).unwrap();
+        let r = fit_size(1, 80, 10_000, Order::Ceiling, false, single).unwrap();
         assert_eq!((found(&r), r.tries), (Some(80), 1));
     }
 
     #[test]
     fn ceiling_unreachable_bisects_down_to_floor() {
         // JPEG 不提前试下限：常见的可达场景少一次编码，代价是达不到时要二分到底
-        let r = fit_size(1, 95, 5, Order::Ceiling, single).unwrap();
+        let r = fit_size(1, 95, 5, Order::Ceiling, false, single).unwrap();
         assert_eq!((found(&r), r.tries, size_of(&r)), (None, 7, 10));
     }
 
     #[test]
     fn parallel_first_round_tries_three_candidates() {
-        let r = fit_size(1, 80, 10_000, PARALLEL, single).unwrap();
+        let r = fit_size(1, 80, 10_000, PARALLEL, false, single).unwrap();
         assert_eq!((found(&r), r.tries), (Some(80), 3));
     }
 
     #[test]
     fn equal_bounds_encode_once() {
-        let r = fit_size(50, 50, 10_000, PARALLEL, single).unwrap();
+        let r = fit_size(50, 50, 10_000, PARALLEL, false, single).unwrap();
         assert_eq!((found(&r), r.tries), (Some(50), 1));
-        let r = fit_size(50, 51, 10_000, PARALLEL, single).unwrap();
+        let r = fit_size(50, 51, 10_000, PARALLEL, false, single).unwrap();
         assert_eq!((found(&r), r.tries), (Some(51), 2));
-        let r = fit_size(50, 50, 5, SEQUENTIAL, single).unwrap();
+        let r = fit_size(50, 50, 5, SEQUENTIAL, false, single).unwrap();
         assert_eq!((found(&r), r.tries), (None, 1));
     }
 
     #[test]
     fn sequential_split_stops_when_floor_fails() {
-        let r = fit_size(1, 100, 5, SEQUENTIAL, single).unwrap();
+        let r = fit_size(1, 100, 5, SEQUENTIAL, false, single).unwrap();
         assert_eq!((found(&r), r.tries, size_of(&r)), (None, 2, 10));
     }
 
     #[test]
     fn sequential_split_reachable_costs_one_extra_try() {
-        let r = fit_size(1, 100, 555, SEQUENTIAL, single).unwrap();
+        let r = fit_size(1, 100, 555, SEQUENTIAL, false, single).unwrap();
         assert_eq!((found(&r), r.tries), (Some(55), 9));
-        let r = fit_size(1, 100, 10_000, SEQUENTIAL, single).unwrap();
+        let r = fit_size(1, 100, 10_000, SEQUENTIAL, false, single).unwrap();
         assert_eq!((found(&r), r.tries), (Some(100), 1));
     }
 
     #[test]
     fn floor_fails_in_one_try() {
         // 连最低质量都超限，最贵的上限不该被试
-        let r = fit_size(1, 95, 5, Order::Floor, single).unwrap();
+        let r = fit_size(1, 95, 5, Order::Floor, false, single).unwrap();
         assert_eq!((found(&r), r.tries, size_of(&r)), (None, 1, 10));
     }
 
     #[test]
     fn floor_gallops_when_cap_is_near_floor_size() {
         // 下限 10 字节，上限 25 字节：比值 2.5，倍增 2、4，再二分 3
-        let r = fit_size(1, 95, 25, Order::Floor, single).unwrap();
+        let r = fit_size(1, 95, 25, Order::Floor, false, single).unwrap();
         assert_eq!((found(&r), r.tries), (Some(2), 4));
     }
 
     #[test]
     fn floor_bisects_when_cap_is_far_from_floor_size() {
         // 比值 55.5：直接二分，比倍增（12 次）省
-        let r = fit_size(1, 95, 555, Order::Floor, single).unwrap();
+        let r = fit_size(1, 95, 555, Order::Floor, false, single).unwrap();
         assert_eq!(found(&r), Some(55));
         assert!(r.tries <= 8, "{} 次", r.tries);
     }
 
     #[test]
     fn parallel_unreachable_stops_after_first_round() {
-        let r = fit_size(1, 95, 5, PARALLEL, single).unwrap();
+        let r = fit_size(1, 95, 5, PARALLEL, false, single).unwrap();
         assert_eq!((found(&r), r.tries), (None, 3));
     }
 
     #[test]
     fn finds_highest_quality_under_cap() {
         for order in [Order::Ceiling, PARALLEL, SEQUENTIAL, Order::Floor] {
-            let r = fit_size(1, 95, 555, order, single).unwrap();
+            let r = fit_size(1, 95, 555, order, false, single).unwrap();
             assert_eq!(found(&r), Some(55), "{order:?}");
             assert!(r.tries <= 10, "{order:?}: {} 次", r.tries);
         }
@@ -356,23 +382,23 @@ mod tests {
 
     #[test]
     fn exact_lower_bound() {
-        let r = fit_size(10, 95, 100, Order::Ceiling, single).unwrap();
+        let r = fit_size(10, 95, 100, Order::Ceiling, false, single).unwrap();
         assert_eq!(found(&r), Some(10));
     }
 
     #[test]
     fn parallel_first_round_tries_the_second_ceiling() {
         // 体积 = 质量 × 10：上限 100 超限（1000 > 990），次上限 99 正好可行
-        let r = fit_size(1, 100, 990, PARALLEL, single).unwrap();
+        let r = fit_size(1, 100, 990, PARALLEL, false, single).unwrap();
         assert_eq!((found(&r), r.tries), (Some(99), 3));
-        let r = fit_size(1, 100, 990, SEQUENTIAL, single).unwrap();
+        let r = fit_size(1, 100, 990, SEQUENTIAL, false, single).unwrap();
         assert_eq!(found(&r), Some(99));
     }
 
     #[test]
     fn unreachable_returns_smallest() {
         for order in [Order::Ceiling, PARALLEL, SEQUENTIAL] {
-            let r = fit_size(10, 95, 50, order, single).unwrap();
+            let r = fit_size(10, 95, 50, order, false, single).unwrap();
             match r.fit {
                 Fit::Unreachable { quality, data } => {
                     assert_eq!((quality, data.len()), (10, 100), "{order:?}")
@@ -384,13 +410,13 @@ mod tests {
 
     #[test]
     fn zero_lower_bound_does_not_underflow() {
-        let r = fit_size(0, 0, 1, Order::Ceiling, |qs| {
+        let r = fit_size(0, 0, 1, Order::Ceiling, false, |qs| {
             Ok(qs.iter().map(|_| vec![0; 5]).collect())
         })
         .unwrap();
         assert!(matches!(r.fit, Fit::Unreachable { quality: 0, .. }));
         assert_eq!(r.tries, 1);
-        let r = fit_size(0, 100, 0, Order::Ceiling, single).unwrap();
+        let r = fit_size(0, 100, 0, Order::Ceiling, false, single).unwrap();
         assert_eq!(found(&r), Some(0));
     }
 
@@ -403,7 +429,7 @@ mod tests {
                 .map(|&q| vec![0; if q == 60 { 100 } else { usize::from(q) * 10 }])
                 .collect())
         };
-        let r = fit_size(1, 95, 450, Order::Ceiling, bumpy).unwrap();
+        let r = fit_size(1, 95, 450, Order::Ceiling, false, bumpy).unwrap();
         match r.fit {
             Fit::Found { data, .. } => assert!(data.len() <= 450),
             Fit::Unreachable { .. } => panic!("应能满足"),
@@ -412,14 +438,14 @@ mod tests {
 
     #[test]
     fn probes_record_every_try() {
-        let r = fit_size(1, 95, 555, Order::Ceiling, single).unwrap();
+        let r = fit_size(1, 95, 555, Order::Ceiling, false, single).unwrap();
         assert_eq!(r.probes.len() as u32, r.tries);
         assert_eq!(r.probes[0], (95, 950));
     }
 
     #[test]
     fn climb_finds_higher_quality_that_fits() {
-        let (q, data, tries) = climb(40, linear(40), 95, 555, |q| Ok(linear(q))).unwrap();
+        let (q, data, tries) = climb(40, linear(40), 95, 555, false, single).unwrap();
         assert_eq!((q, data.len()), (55, 550));
         // 倍增 41、43、47、55、71，再在 56..=70 二分 4 次
         assert_eq!(tries, 9);
@@ -427,10 +453,10 @@ mod tests {
 
     #[test]
     fn climb_stops_at_ceiling() {
-        let (q, _, tries) = climb(90, linear(90), 95, 10_000, |q| Ok(linear(q))).unwrap();
+        let (q, _, tries) = climb(90, linear(90), 95, 10_000, false, single).unwrap();
         assert_eq!(q, 95);
         assert!(tries <= 3);
-        let (q, _, tries) = climb(95, linear(95), 95, 10_000, |q| Ok(linear(q))).unwrap();
+        let (q, _, tries) = climb(95, linear(95), 95, 10_000, false, single).unwrap();
         assert_eq!((q, tries), (95, 0));
     }
 
@@ -445,6 +471,10 @@ mod tests {
         vec![0; size]
     }
 
+    fn u_finals(qs: &[u8]) -> Result<Vec<Vec<u8>>> {
+        Ok(qs.iter().copied().map(u_final).collect())
+    }
+
     fn u_estimate(qs: &[u8]) -> Result<Vec<Vec<u8>>> {
         Ok(qs
             .iter()
@@ -456,12 +486,12 @@ mod tests {
     fn retest_reaches_top_candidate_misjudged_by_estimate() {
         // 估算全部超限；定稿后 q1 放得下，但往上爬会撞上中间的高峰，必须靠复测拿到 q99
         let cap = 7_168;
-        let r = fit_size(1, 100, cap, PARALLEL, u_estimate).unwrap();
+        let r = fit_size(1, 100, cap, PARALLEL, false, u_estimate).unwrap();
         let Fit::Unreachable { quality, .. } = r.fit else {
             panic!("按估算应判为达不到");
         };
         assert_eq!(quality, 1);
-        let (q, _, _) = climb(1, u_final(1), 99, cap, |q| Ok(u_final(q))).unwrap();
+        let (q, _, _) = climb(1, u_final(1), 99, cap, false, u_finals).unwrap();
         assert_eq!(q, 3, "倍增在 q4 撞上高峰就停");
 
         let mut tries = 0;
@@ -543,5 +573,64 @@ mod tests {
         )
         .unwrap();
         assert!(hit.is_none());
+    }
+
+    #[test]
+    fn lookahead_keeps_results_and_tries() {
+        fn check(encode: impl Fn(&[u8]) -> Result<Vec<Vec<u8>>>) {
+            for cap in [5, 25, 95, 333, 555, 949, 10_000] {
+                for order in [Order::Ceiling, PARALLEL, SEQUENTIAL, Order::Floor] {
+                    let [plain, ahead] = [false, true].map(|lookahead| {
+                        let r = fit_size(1, 95, cap, order, lookahead, &encode).unwrap();
+                        (found(&r), size_of(&r), r.tries, r.probes)
+                    });
+                    assert_eq!(plain, ahead, "{order:?} {cap}");
+                }
+                for start in [1, 9, 33] {
+                    let data = encode(&[start]).unwrap().remove(0);
+                    if data.len() as u64 > cap {
+                        continue;
+                    }
+                    let [plain, ahead] = [false, true].map(|lookahead| {
+                        climb(start, data.clone(), 95, cap, lookahead, &encode).unwrap()
+                    });
+                    assert_eq!(plain, ahead, "从 {start} 往上爬，上限 {cap}");
+                }
+            }
+        }
+        check(single);
+        // 体积不单调时也一样
+        check(|qs| {
+            let size = |q: u8| {
+                if q.is_multiple_of(7) {
+                    100
+                } else {
+                    usize::from(q) * 10
+                }
+            };
+            Ok(qs.iter().map(|&q| vec![0; size(q)]).collect())
+        });
+    }
+
+    #[test]
+    fn lookahead_encodes_upcoming_qualities_together() {
+        let mut rounds = Vec::new();
+        let r = fit_size(1, 95, 555, Order::Ceiling, true, |qs| {
+            rounds.push(qs.to_vec());
+            single(qs)
+        })
+        .unwrap();
+        assert_eq!((found(&r), r.tries), (Some(55), 8));
+        // 每轮带上不超限、超限两种情况下的下一个质量，一轮定两步
+        assert_eq!(
+            rounds,
+            [
+                vec![95],
+                vec![47, 71, 23],
+                vec![59, 65, 53],
+                vec![56, 57, 54],
+                vec![55]
+            ]
+        );
     }
 }

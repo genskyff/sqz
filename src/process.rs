@@ -14,13 +14,13 @@ use crate::search::{Fit, Order, climb, fit_size, retest_top};
 
 const DEFAULT_QUALITY: u8 = 75;
 
-fn search_encode(
+fn encode_all(
     encoder: &Encoder,
     qualities: &[u8],
-    cap: u64,
+    effort: Effort,
     parallel: bool,
 ) -> Result<Vec<Vec<u8>>> {
-    let encode = |&q: &u8| encoder.encode(q, Effort::Search { cap });
+    let encode = |&q: &u8| encoder.encode(q, effort);
     if parallel {
         qualities.par_iter().map(encode).collect()
     } else {
@@ -106,18 +106,18 @@ fn fit_to_cap(
     let is_png = matches!(format, OutputFormat::Png);
     // PNG 的 q100 走无损路径，和有损区间是两条体积曲线
     let split = is_png && ceiling >= 100;
-    // 并行试探每个都要额外占一份量化内存；多文件时文件本身已经占满线程，
-    // 大图也容易把内存顶高，这两种情况退回逐个试探。
+    // 并行试探各占一份编码内存；多文件时线程已被占满，大图内存吃紧，都逐个试
     let parallel =
-        split && cli.inputs.len() == 1 && pixels <= 16_000_000 && rayon::current_num_threads() >= 3;
+        cli.inputs.len() == 1 && pixels <= 16_000_000 && rayon::current_num_threads() >= 3;
+    let probe = Effort::Search { cap };
     let order = if split {
         Order::SplitCeiling { parallel }
     } else {
         Order::Ceiling
     };
     let mut search_ceiling = ceiling;
-    let mut result = fit_size(min_quality, ceiling, cap, order, |qs| {
-        search_encode(encoder, qs, cap, parallel)
+    let mut result = fit_size(min_quality, ceiling, cap, order, parallel, |qs| {
+        encode_all(encoder, qs, probe, parallel)
     })?;
     let mut probes = std::mem::take(&mut result.probes);
     // 抖动噪点让 PNG 很难再变小：未指定 --dither 时，达不到上限就关掉抖动再搜一次。
@@ -128,9 +128,14 @@ fn fit_to_cap(
         && ditherless_ceiling >= min_quality
         && encoder.drop_dither()
     {
-        let retry = fit_size(min_quality, ditherless_ceiling, cap, Order::Floor, |qs| {
-            search_encode(encoder, qs, cap, false)
-        })?;
+        let retry = fit_size(
+            min_quality,
+            ditherless_ceiling,
+            cap,
+            Order::Floor,
+            parallel,
+            |qs| encode_all(encoder, qs, probe, parallel),
+        )?;
         result.tries += retry.tries;
         result.fit = retry.fit;
         probes.extend(retry.probes);
@@ -177,8 +182,9 @@ fn fit_to_cap(
         }
         // 定稿比估算小，更高的质量也可能放得下；只在有损区间里爬
         None if fits && data.len() < searched_len => {
-            let (q, d, tries) = climb(quality, data, search_ceiling.min(99), cap, |q| {
-                encoder.encode(q, Effort::Final)
+            let hi = search_ceiling.min(99);
+            let (q, d, tries) = climb(quality, data, hi, cap, parallel, |qs| {
+                encode_all(encoder, qs, Effort::Final, parallel)
             })?;
             (quality, data) = (q, d);
             report.tries += tries;
