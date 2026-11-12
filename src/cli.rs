@@ -2,11 +2,11 @@ use std::path::PathBuf;
 
 use clap::{Parser, ValueEnum};
 
-/// 压缩 PNG / JPEG / HEIC / WebP 图片。
+/// 压缩 PNG / JPEG / HEIC / WebP 图片
 ///
-/// 默认按质量压缩（-q，默认 75）；给出 --max-size 时，在不超过该大小的前提下反推最高质量。
+/// 默认按 -q 75 压缩；给出 -s 时，找不超过该大小的最高质量
 ///
-/// 输出格式默认：PNG→PNG，JPEG→JPEG，HEIC→JPEG，WebP→WebP。
+/// 默认输出与输入同格式，HEIC 转成 JPEG
 #[derive(Debug, Parser)]
 #[command(name = "sqz", version)]
 pub struct Cli {
@@ -14,15 +14,15 @@ pub struct Cli {
     #[arg(required = true)]
     pub inputs: Vec<PathBuf>,
 
-    /// 输出文件（仅限单个输入）；未指定 -f 时按扩展名推断格式
+    /// 输出文件，仅限单个输入；未指定 -f 时按扩展名定格式
     #[arg(short, long, conflicts_with = "out_dir")]
     pub output: Option<PathBuf>,
 
-    /// 输出目录；不指定 -o/-d 时输出到输入文件所在目录
+    /// 输出目录，默认是输入文件所在目录
     #[arg(short = 'd', long)]
     pub out_dir: Option<PathBuf>,
 
-    /// 输出文件名后缀，默认：使用 -d 时为空，否则为 ".min"
+    /// 输出文件名后缀，默认 .min，用 -d 时默认为空
     #[arg(long)]
     pub suffix: Option<String>,
 
@@ -30,23 +30,23 @@ pub struct Cli {
     #[arg(short, long, value_enum, ignore_case = true, default_value_t = FormatArg::Auto)]
     pub format: FormatArg,
 
-    /// 只转换格式，不降质：PNG、WebP 无损，JPEG 用 q100。须用 -f 或 -o 的扩展名指定目标格式
+    /// 只转格式不降质：PNG、WebP 无损，JPEG 用 q100；须用 -f 或 -o 的扩展名指定格式
     #[arg(long, conflicts_with_all = ["quality", "max_size", "min_quality", "best_effort", "colors", "dither"])]
     pub convert_only: bool,
 
-    /// 质量 0-100（JPEG 刻度与 mozjpeg 相近；PNG 为 100 时无损；WebP 为有损）。与 --max-size 同用时作为质量上限，单用 --max-size 时上限为 JPEG/WebP 95、PNG 100
+    /// 质量 0-100，默认 75，PNG 的 100 是无损；与 -s 同用时是质量上限，默认 JPEG/WebP 95、PNG 100
     #[arg(short, long, value_parser = clap::value_parser!(u8).range(0..=100))]
     pub quality: Option<u8>,
 
-    /// 输出大小上限，如 500KB、1.5MB、300KiB（KB=1000，KiB=1024）
+    /// 输出大小上限，如 500KB、1.5MB、300KiB；KB=1000，KiB=1024
     #[arg(short = 's', long, value_parser = parse_size)]
     pub max_size: Option<u64>,
 
-    /// --max-size 搜索的质量下限，默认 JPEG/WebP 1、PNG 30。PNG 降质靠减少颜色，低于 30 时颜色会严重失真
+    /// -s 搜索的质量下限，默认 JPEG/WebP 1、PNG 30；PNG 低于 30 颜色严重失真
     #[arg(long, value_parser = clap::value_parser!(u8).range(0..=100))]
     pub min_quality: Option<u8>,
 
-    /// 达不到 --max-size 时仍写出能做到的最小结果（默认不写并报错）
+    /// 达不到 -s 时仍写出最小的结果，默认报错不写
     #[arg(long)]
     pub best_effort: bool,
 
@@ -54,7 +54,7 @@ pub struct Cli {
     #[arg(long, value_enum, default_value_t = Chroma::C420)]
     pub chroma: Chroma,
 
-    /// 透明图片转 JPEG 时铺的底色（十六进制 RGB）
+    /// 透明图片转 JPEG 时的底色，十六进制 RGB
     #[arg(long, default_value = "ffffff", value_parser = parse_color)]
     pub background: Rgb,
 
@@ -62,27 +62,27 @@ pub struct Cli {
     #[arg(long, default_value_t = 256, value_parser = clap::value_parser!(u32).range(2..=256))]
     pub colors: u32,
 
-    /// PNG 有损压缩的抖动强度 0-1，默认 1。未指定时，若开着抖动达不到 --max-size，会关掉抖动再搜一次
+    /// PNG 有损压缩的抖动强度 0-1，默认 1；未指定且达不到 -s 时会关掉抖动重试
     #[arg(long, value_parser = parse_unit)]
     pub dither: Option<f32>,
 
-    /// 不保留 ICC 色彩配置文件
+    /// 不保留 ICC
     #[arg(long)]
     pub strip_icc: bool,
 
-    /// 不保留 EXIF（默认保留，方向已应用到像素上，其中的方向重置为正常、像素尺寸改为输出尺寸）
+    /// 不保留 EXIF
     #[arg(long)]
     pub strip_exif: bool,
 
-    /// 不保留 XMP（默认保留，方向和像素尺寸的处理同 EXIF，MWG 区域标注随像素一起转）
+    /// 不保留 XMP
     #[arg(long)]
     pub strip_xmp: bool,
 
-    /// 同格式输出不比原文件小时仍写出结果（默认改为原样复制原文件）
+    /// 同格式输出不比原文件小时仍写出，默认改为复制原文件
     #[arg(long)]
     pub allow_larger: bool,
 
-    /// 允许覆盖已存在的输出文件（包括输入文件本身）
+    /// 允许覆盖已有的输出文件，包括输入文件本身
     #[arg(long)]
     pub overwrite: bool,
 
@@ -90,7 +90,7 @@ pub struct Cli {
     #[arg(short, long)]
     pub jobs: Option<usize>,
 
-    /// 以 JSON 输出结果（stdout），便于脚本和 agent 解析
+    /// 以 JSON 输出结果
     #[arg(long)]
     pub json: bool,
 }

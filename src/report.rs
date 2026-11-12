@@ -4,7 +4,7 @@ use serde::Serialize;
 
 use crate::encode::OutputFormat;
 
-pub const PNG_JPEG_HINT: &str = "PNG 降质只会减少颜色，照片类图片可改用 -f jpg";
+pub const PNG_JPEG_HINT: &str = "照片类图片可改用 -f jpg";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -104,11 +104,11 @@ pub fn print_human(reports: &[Report]) {
                     line.push_str(&format!("  试了 {} 次", r.tries));
                 }
                 match r.status {
-                    Status::KeptOriginal => line.push_str("  （压缩后不更小，保留原图）"),
-                    Status::BestEffort if r.format == Some(OutputFormat::Png) => line.push_str(
-                        &format!("  （未达到大小上限，已写出最小结果；{PNG_JPEG_HINT}）"),
-                    ),
-                    Status::BestEffort => line.push_str("  （未达到大小上限，已写出最小结果）"),
+                    Status::KeptOriginal => line.push_str("  未变小，保留原图"),
+                    Status::BestEffort if r.format == Some(OutputFormat::Png) => {
+                        line.push_str(&format!("  未达上限，已写出最小结果；{PNG_JPEG_HINT}"))
+                    }
+                    Status::BestEffort => line.push_str("  未达上限，已写出最小结果"),
                     _ => {}
                 }
                 println!("{line}");

@@ -14,7 +14,7 @@ pub enum InputFormat {
     Webp,
 }
 
-pub const UNSUPPORTED_INPUT: &str = "不支持的输入格式（仅支持 PNG、JPEG、HEIC、WebP）";
+pub const UNSUPPORTED_INPUT: &str = "不支持的输入格式，仅支持 PNG、JPEG、HEIC、WebP";
 
 /// 解码后的 8-bit RGBA 像素，方向已应用到像素上。
 pub struct Decoded {

@@ -25,11 +25,11 @@ fn main() -> ExitCode {
     let mut cli = Cli::parse();
     cli.inputs = expand_inputs(&cli.inputs);
     if cli.output.is_some() && cli.inputs.len() > 1 {
-        eprintln!("错误：-o 只能用于单个输入，多个输入请用 -d 指定输出目录");
+        eprintln!("错误：-o 只能用于单个输入，多个输入请用 -d");
         return ExitCode::from(2);
     }
     if cli.convert_only && explicit_format(&cli).is_none() {
-        eprintln!("错误：--convert-only 须用 -f 或 -o 的扩展名指定目标格式");
+        eprintln!("错误：--convert-only 须用 -f 或 -o 的扩展名指定格式");
         return ExitCode::from(2);
     }
     if let Some(threads) = cli.jobs

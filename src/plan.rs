@@ -53,7 +53,7 @@ fn is_pattern(path: &Path) -> bool {
 
 pub fn plan(cli: &Cli, input: &Path) -> Result<Plan> {
     if is_pattern(input) && !input.exists() {
-        bail!("通配符没有匹配到任何文件");
+        bail!("通配符没有匹配到文件");
     }
     let mut head = Vec::with_capacity(512);
     File::open(input)
@@ -74,10 +74,7 @@ pub fn plan(cli: &Cli, input: &Path) -> Result<Plan> {
         if same_file(&output, input) {
             bail!("输出路径就是输入文件，加 --overwrite 才能原地覆盖");
         }
-        bail!(
-            "输出文件已存在：{}（加 --overwrite 覆盖）",
-            output.display()
-        );
+        bail!("输出文件已存在：{}，加 --overwrite 覆盖", output.display());
     }
     Ok(Plan {
         input_format,

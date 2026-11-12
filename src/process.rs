@@ -202,7 +202,7 @@ fn fit_to_cap(
             "可降低 --min-quality"
         };
         bail!(
-            "质量降到 {quality} 仍有 {}，超过上限 {}（{hint}，或加 --best-effort 写出最小结果）",
+            "质量降到 {quality} 仍有 {}，超过上限 {}；{hint}，或加 --best-effort 写出最小结果",
             human_size(data.len() as u64),
             human_size(cap)
         );
