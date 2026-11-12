@@ -84,6 +84,8 @@ pub struct PngJob<'a> {
     rgba: Vec<u8>,
     quant_pixels: OnceLock<Vec<imagequant::RGBA>>,
     last_quantized: Mutex<Option<Arc<Quantized>>>,
+    /// 定稿过的结果，按质量和抖动记：复测和往上爬会回到同一档
+    finals: Mutex<Vec<(u8, f32, Vec<u8>)>>,
     meta: Metadata<'a>,
     max_colors: u32,
     dither: f32,
@@ -110,6 +112,7 @@ impl<'a> PngJob<'a> {
             rgba,
             quant_pixels: OnceLock::new(),
             last_quantized: Mutex::new(None),
+            finals: Mutex::new(Vec::new()),
             meta,
             max_colors,
             dither,
@@ -128,6 +131,23 @@ impl<'a> PngJob<'a> {
         if quality >= 100 {
             return Ok(self.lossless(effort));
         }
+        let Effort::Final = effort else {
+            return self.lossy(quality, None);
+        };
+        let finals = || self.finals.lock().unwrap_or_else(|e| e.into_inner());
+        let done = finals()
+            .iter()
+            .find(|(q, dither, _)| *q == quality && *dither == self.dither)
+            .map(|(_, _, png)| png.clone());
+        if let Some(png) = done {
+            return Ok(png);
+        }
+        let png = self.lossy(quality, Some(usize::MAX))?;
+        finals().push((quality, self.dither, png.clone()));
+        Ok(png)
+    }
+
+    fn lossy(&self, quality: u8, best_within: Option<usize>) -> Result<Vec<u8>> {
         // 抖动会在量化时烧进索引，缓存必须按（质量, 抖动）匹配。
         // 用 Arc 把结果带出锁，压缩期间不占锁，几个试探可以并行跑。
         let cached = {
@@ -152,10 +172,6 @@ impl<'a> PngJob<'a> {
             }
         };
         let raster = Raster::indexed(&quantized.palette, &quantized.indices, self.width);
-        let best_within = match effort {
-            Effort::Search { .. } => None,
-            Effort::Final => Some(usize::MAX),
-        };
         let idat = compress(&raster, best_within);
         Ok(assemble(&raster, self.width, self.height, &idat, self.meta))
     }

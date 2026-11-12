@@ -104,6 +104,18 @@ pub fn climb(
     }
 }
 
+/// [`climb`] 头两步会试的质量，供调用方提前编码
+pub fn climb_start(quality: u8, hi: u8) -> Vec<u8> {
+    let mut start = Vec::new();
+    if quality < hi {
+        start.push(quality + 1);
+        if quality + 1 < hi {
+            start.push(quality.saturating_add(3).min(hi));
+        }
+    }
+    start
+}
+
 /// 按定稿档位从高到低复测 `candidates` 里的质量，返回第一个不超限的。
 ///
 /// 体积随质量不一定单调（调色板图在低质量时抖动反而更大），估算又偏大，搜索可能把
@@ -632,5 +644,19 @@ mod tests {
                 vec![55]
             ]
         );
+    }
+
+    #[test]
+    fn climb_start_matches_the_first_round() {
+        for (quality, hi) in [(40, 95), (93, 95), (94, 95), (95, 95)] {
+            let mut rounds = Vec::new();
+            climb(quality, linear(quality), hi, 10_000, true, |qs| {
+                rounds.push(qs.to_vec());
+                single(qs)
+            })
+            .unwrap();
+            let first = rounds.first().cloned().unwrap_or_default();
+            assert_eq!(first, climb_start(quality, hi), "从 {quality} 起");
+        }
     }
 }

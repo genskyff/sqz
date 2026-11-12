@@ -1,5 +1,5 @@
-use std::fs;
 use std::path::{Path, PathBuf};
+use std::{fs, iter};
 
 use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
@@ -10,7 +10,7 @@ use crate::encode::{Effort, Encoder, OutputFormat};
 use crate::meta::Metadata;
 use crate::plan::{Plan, same_file};
 use crate::report::{PNG_JPEG_HINT, Report, Status, human_size};
-use crate::search::{Fit, Order, climb, fit_size, retest_top};
+use crate::search::{Fit, Order, climb, climb_start, fit_size, retest_top};
 
 const DEFAULT_QUALITY: u8 = 75;
 
@@ -142,6 +142,7 @@ fn fit_to_cap(
         search_ceiling = ditherless_ceiling;
     }
     report.tries = result.tries;
+    let found = matches!(result.fit, Fit::Found { .. });
     let (Fit::Found {
         mut quality,
         data: searched,
@@ -152,6 +153,16 @@ fn fit_to_cap(
     }) = result.fit;
     // 搜索用快速档位估算，体积偏大；是否达标以定稿体积为准
     let searched_len = searched.len();
+    let hi = search_ceiling.min(99);
+    if parallel && is_png && found {
+        // 定稿和往上爬的头两步一起编码；PNG 编码器记着结果，后面直接取用
+        let ahead: Vec<u8> = iter::once(quality)
+            .chain(climb_start(quality, hi))
+            .collect();
+        if ahead.len() > 1 {
+            encode_all(encoder, &ahead, Effort::Final, parallel)?;
+        }
+    }
     let mut data = encoder.refine(quality, searched, cap)?;
     let mut fits = data.len() as u64 <= cap;
     // JPEG、WebP 的估算就是定稿体积，不必复测
@@ -182,7 +193,6 @@ fn fit_to_cap(
         }
         // 定稿比估算小，更高的质量也可能放得下；只在有损区间里爬
         None if fits && data.len() < searched_len => {
-            let hi = search_ceiling.min(99);
             let (q, d, tries) = climb(quality, data, hi, cap, parallel, |qs| {
                 encode_all(encoder, qs, Effort::Final, parallel)
             })?;
