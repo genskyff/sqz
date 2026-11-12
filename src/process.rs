@@ -14,8 +14,13 @@ use crate::search::{Fit, Order, climb, fit_size, retest_top};
 
 const DEFAULT_QUALITY: u8 = 75;
 
-fn search_encode(encoder: &Encoder, qualities: &[u8], parallel: bool) -> Result<Vec<Vec<u8>>> {
-    let encode = |&q: &u8| encoder.encode(q, Effort::Search);
+fn search_encode(
+    encoder: &Encoder,
+    qualities: &[u8],
+    cap: u64,
+    parallel: bool,
+) -> Result<Vec<Vec<u8>>> {
+    let encode = |&q: &u8| encoder.encode(q, Effort::Search { cap });
     if parallel {
         qualities.par_iter().map(encode).collect()
     } else {
@@ -114,7 +119,7 @@ fn fit_to_cap(
     };
     let mut search_ceiling = ceiling;
     let mut result = fit_size(min_quality, ceiling, cap, order, |qs| {
-        search_encode(encoder, qs, parallel)
+        search_encode(encoder, qs, cap, parallel)
     })?;
     let mut probes = std::mem::take(&mut result.probes);
     // 抖动噪点让 PNG 很难再变小：未指定 --dither 时，达不到上限就关掉抖动再搜一次。
@@ -126,7 +131,7 @@ fn fit_to_cap(
         && encoder.drop_dither()
     {
         let retry = fit_size(min_quality, ditherless_ceiling, cap, Order::Floor, |qs| {
-            search_encode(encoder, qs, false)
+            search_encode(encoder, qs, cap, false)
         })?;
         result.tries += retry.tries;
         result.fit = retry.fit;
@@ -144,23 +149,22 @@ fn fit_to_cap(
     }) = result.fit;
     // 搜索用快速档位估算，体积偏大；是否达标以定稿体积为准
     let searched_len = searched.len();
-    let mut data = encoder.refine(quality, searched)?;
+    let mut data = encoder.refine(quality, searched, cap)?;
     let mut fits = data.len() as u64 <= cap;
     // JPEG、WebP 的估算就是定稿体积，不必复测
     let mut top = None;
     if is_png {
+        // 无损在搜索时已有定论，有损区间只复测最高的 99
+        let (retest, floor) = if split {
+            (99, min_quality.max(99))
+        } else {
+            (ceiling, min_quality)
+        };
         let mut retests = 0;
-        top = retest_top(
-            ceiling,
-            min_quality,
-            fits.then_some(quality),
-            cap,
-            &probes,
-            |q| {
-                retests += 1;
-                encoder.encode(q, Effort::Final)
-            },
-        )?;
+        top = retest_top(retest, floor, fits.then_some(quality), cap, &probes, |q| {
+            retests += 1;
+            encoder.encode(q, Effort::Final)
+        })?;
         report.tries += retests;
     }
     match top {
@@ -168,7 +172,7 @@ fn fit_to_cap(
             (quality, data) = (q, d);
             fits = true;
         }
-        // 定稿比估算小，更高的质量也可能放得下；无损已由复测决定，只在有损区间里爬
+        // 定稿比估算小，更高的质量也可能放得下；无损在搜索时已有定论，只在有损区间里爬
         None if fits && data.len() < searched_len => {
             let (q, d, tries) = climb(quality, data, search_ceiling.min(99), cap, |q| {
                 encoder.encode(q, Effort::Final)

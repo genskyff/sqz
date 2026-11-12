@@ -1,19 +1,20 @@
 use std::collections::HashMap;
+use std::io::{self, Write};
 use std::sync::{Arc, Mutex, OnceLock};
 
 use anyhow::{Result, anyhow};
 use flate2::Compression;
 use flate2::write::ZlibEncoder;
 use rayon::prelude::*;
-use std::io::Write;
 
 use super::{icc_matches, is_gray, is_opaque};
 use crate::meta::Metadata;
 
-/// 搜索时用较快的 deflate 档位估算，定稿时再用最高档压一遍并取更小者。
+/// 搜索时有损图用较快的 deflate 档位估算体积，定稿时再用最高档压一遍并取更小者。
+/// 无损图的估算靠不住，搜索时对着大小上限 `cap` 直接压到定稿，见 [`compress`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effort {
-    Search,
+    Search { cap: u64 },
     Final,
 }
 
@@ -21,11 +22,46 @@ pub enum Effort {
 const PROBE_LEVEL: u8 = 6;
 const BEST_LEVEL: u8 = 9;
 
-/// PNG 的 IDAT、iCCP 都要求 zlib 包装（RFC 1950）。
+/// 试探档位的结果比最高档大出多少，要看数据有多好压。压缩比不到这个倍数的（照片、带噪点的图）
+/// 实测最多大 14%，最高档又慢；达到的（截图、色块图）可大出一倍以上，压起来也快。经验值，样本有限。
+const COMPRESSIBLE_RATIO: usize = 16;
+
+/// 不好压的数据，试探结果超出上限这个倍数时最高档也救不回来。经验值，样本有限。
+const HOPELESS_MARGIN: f64 = 1.3;
+
+/// 只收下 `limit` 字节，再多就报错，借此让压缩中途停下。
+struct Capped {
+    out: Vec<u8>,
+    limit: usize,
+}
+
+impl Write for Capped {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        if self.out.len() + buf.len() > self.limit {
+            return Err(io::ErrorKind::FileTooLarge.into());
+        }
+        self.out.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+/// PNG 的 IDAT、iCCP 都要求 zlib 包装（RFC 1950）。输出一超过 `limit` 字节就中止，返回 None。
+fn zlib_within(data: &[u8], level: u8, limit: usize) -> Option<Vec<u8>> {
+    let sink = Capped {
+        out: Vec::new(),
+        limit,
+    };
+    let mut encoder = ZlibEncoder::new(sink, Compression::new(u32::from(level)));
+    encoder.write_all(data).ok()?;
+    Some(encoder.finish().ok()?.out)
+}
+
 fn zlib(data: &[u8], level: u8) -> Vec<u8> {
-    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(u32::from(level)));
-    encoder.write_all(data).expect("写入内存不会失败");
-    encoder.finish().expect("zlib 压缩不会失败")
+    zlib_within(data, level, usize::MAX).expect("不设上限就不会中止")
 }
 
 const COLOR_GRAY: u8 = 0;
@@ -90,7 +126,7 @@ impl<'a> PngJob<'a> {
     }
 
     /// quality 为 100 时无损，否则用 imagequant 量化为调色板图。
-    /// `effort` 决定 deflate 档位：搜索时用快档估算体积，定稿时用最高档。
+    /// `effort` 决定 deflate 档位，见 [`Effort`]。
     pub fn encode(&self, quality: u8, effort: Effort) -> Result<Vec<u8>> {
         if quality >= 100 {
             return Ok(self.lossless(effort));
@@ -119,7 +155,11 @@ impl<'a> PngJob<'a> {
             }
         };
         let raster = Raster::indexed(&quantized.palette, &quantized.indices, self.width);
-        let idat = compress(&raster, effort);
+        let best_within = match effort {
+            Effort::Search { .. } => None,
+            Effort::Final => Some(usize::MAX),
+        };
+        let idat = compress(&raster, best_within);
         Ok(assemble(&raster, self.width, self.height, &idat, self.meta))
     }
 
@@ -158,10 +198,15 @@ impl<'a> PngJob<'a> {
         if let Some((palette, indices)) = exact_palette(&self.rgba) {
             candidates.push(Raster::indexed(&palette, &indices, self.width));
         }
+        // 搜索时也压到定稿：放得下的就是最终结果，放不下的只多付到超限为止的那一段
+        let best_within = match effort {
+            Effort::Search { cap } => usize::try_from(cap).unwrap_or(usize::MAX),
+            Effort::Final => usize::MAX,
+        };
         let (raster, idat) = candidates
             .into_par_iter()
             .map(|r| {
-                let idat = compress(&r, effort);
+                let idat = compress(&r, Some(best_within));
                 (r, idat)
             })
             .min_by_key(|(_, idat)| idat.len())
@@ -310,7 +355,10 @@ const ALL_FILTERS: [Filter; 6] = [
 const INDEXED_FILTERS: [Filter; 2] = [Filter::Fixed(0), Filter::MinSum];
 
 /// 试各滤波策略，返回最小的 zlib 数据（IDAT 内容）。
-fn compress(raster: &Raster, effort: Effort) -> Vec<u8> {
+///
+/// `best_within` 为 None 时只按试探档位估算。否则再用最高档压一遍，取不超过这个字节数、
+/// 且比试探结果小的那个；压到一半超了就停，不好压的数据离这个字节数太远时干脆不压。
+fn compress(raster: &Raster, best_within: Option<usize>) -> Vec<u8> {
     let filters: &[Filter] = if raster.color_type == COLOR_INDEXED || raster.bit_depth < 8 {
         &INDEXED_FILTERS
     } else {
@@ -321,17 +369,15 @@ fn compress(raster: &Raster, effort: Effort) -> Vec<u8> {
         .map(|&f| (f, zlib(&apply_filter(raster, f), PROBE_LEVEL)))
         .min_by_key(|(_, z)| z.len())
         .expect("至少有一个滤波策略");
-    match effort {
-        Effort::Search => trial,
-        Effort::Final => {
-            let best = zlib(&apply_filter(raster, best_filter), BEST_LEVEL);
-            if best.len() < trial.len() {
-                best
-            } else {
-                trial
-            }
-        }
+    let Some(limit) = best_within else {
+        return trial;
+    };
+    let compressible = trial.len() * COMPRESSIBLE_RATIO <= raster.rows.len();
+    if !compressible && trial.len() as f64 > limit as f64 * HOPELESS_MARGIN {
+        return trial;
     }
+    let limit = limit.min(trial.len() - 1);
+    zlib_within(&apply_filter(raster, best_filter), BEST_LEVEL, limit).unwrap_or(trial)
 }
 
 fn apply_filter(raster: &Raster, filter: Filter) -> Vec<u8> {
@@ -479,7 +525,7 @@ mod tests {
     fn lossless_roundtrip_truecolor() {
         let src = gradient(37, 23);
         let job = PngJob::new(37, 23, src.clone(), 256, 1.0, Metadata::default());
-        for effort in [Effort::Search, Effort::Final] {
+        for effort in [Effort::Search { cap: u64::MAX }, Effort::Final] {
             let png = job.encode(100, effort).unwrap();
             assert_eq!(decode(&png).unwrap().rgba, src);
         }
@@ -494,6 +540,38 @@ mod tests {
             .encode(100, Effort::Final)
             .unwrap();
         assert_eq!(decode(&png).unwrap().rgba, src);
+    }
+
+    /// 16×16 的随机色块平铺：试探档位压出来比最高档大四成以上
+    fn tiles(width: u32, height: u32) -> Vec<u8> {
+        let mut state = 5u32;
+        let tile: Vec<u8> = (0..16 * 16)
+            .map(|_| {
+                state = state.wrapping_mul(1103515245).wrapping_add(12345) & 0x7fff_ffff;
+                ((state >> 16) % 8) as u8 * 36
+            })
+            .collect();
+        (0..width * height)
+            .flat_map(|i| {
+                let v = tile[((i / width % 16) * 16 + i % width % 16) as usize];
+                [v, 255 - v, v / 2, 255]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn lossless_search_settles_within_cap() {
+        let job = PngJob::new(480, 360, tiles(480, 360), 256, 1.0, Metadata::default());
+        let best = job.encode(100, Effort::Final).unwrap();
+        // 上限为 0 时最高档一开始就中止，拿到的是试探档位的结果；它得比定稿大出
+        // HOPELESS_MARGIN 以上，才说明下面的结论不是靠余量碰出来的
+        let estimate = job.encode(100, Effort::Search { cap: 0 }).unwrap();
+        assert!(estimate.len() as f64 > best.len() as f64 * HOPELESS_MARGIN);
+
+        let cap = best.len() as u64;
+        assert_eq!(job.encode(100, Effort::Search { cap }).unwrap(), best);
+        let over = job.encode(100, Effort::Search { cap: cap - 1 }).unwrap();
+        assert!(over.len() as u64 > cap - 1);
     }
 
     #[test]

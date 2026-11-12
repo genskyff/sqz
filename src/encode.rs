@@ -121,8 +121,10 @@ impl<'a> Encoder<'a> {
     }
 
     /// PNG 搜索时用的是快速档位，定稿再用最高档重压并取更小者，因此不会超出上限。
-    pub fn refine(&self, quality: u8, searched: Vec<u8>) -> Result<Vec<u8>> {
+    /// 无损在搜索时已压到定稿，放进了 `cap` 的不必重压。
+    pub fn refine(&self, quality: u8, searched: Vec<u8>, cap: u64) -> Result<Vec<u8>> {
         match self {
+            Encoder::Png(_) if quality >= 100 && searched.len() as u64 <= cap => Ok(searched),
             Encoder::Png(job) => {
                 let refined = job.encode(quality, Effort::Final)?;
                 Ok(if refined.len() < searched.len() {
