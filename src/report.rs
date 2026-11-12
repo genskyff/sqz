@@ -7,11 +7,8 @@ pub const PNG_JPEG_HINT: &str = "照片类图片可改用 -f jpg";
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Status {
     Ok,
-    /// 同格式压缩后不比原图小，输出为原图副本
     KeptOriginal,
-    /// 达不到 --max-size，按 --best-effort 写出了最小结果
     BestEffort,
-    /// 达不到 --max-size，未写出文件
     SizeUnreachable,
     Error,
 }

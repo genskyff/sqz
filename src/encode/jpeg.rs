@@ -5,7 +5,7 @@ use super::{icc_matches, is_gray, is_opaque};
 use crate::cli::{Chroma, Rgb};
 use crate::meta::Metadata;
 
-/// 一个 APP1 段能装下的 EXIF、XMP 上限。超出时编码器会直接截断，截断的数据是坏的，宁可不写
+/// APP1 段的容量；超出时编码器会截断成坏数据，宁可不写
 const MAX_EXIF_BYTES: usize = 65527;
 const MAX_XMP_BYTES: usize = 65504;
 
@@ -57,14 +57,13 @@ impl<'a> JpegJob<'a> {
     }
 
     pub fn encode(&self, quality: u8) -> Result<Vec<u8>> {
-        // 用 mozjpeg 刻度，-q 75 与 Squoosh / mozjpeg 的 q75 体积相近
         let q = Quality::ApproxMozjpeg(quality);
         let config = if self.gray {
             EncoderConfig::grayscale(q)
         } else {
             EncoderConfig::ycbcr(q, self.chroma)
         }
-        // zenjpeg 默认会写 restart marker，部分解码器（如 Claude API）拒收带它的渐进式 JPEG
+        // Claude API 等解码器拒收带 restart marker 的渐进式 JPEG
         .restart_mcu_rows(0);
         let mut request = config.request();
         if let Some(icc) = self.meta.icc {
@@ -121,7 +120,7 @@ mod tests {
             let job = JpegJob::new(8, 4, rgba.clone(), Chroma::C420, Rgb([255; 3]), meta);
             decode(&job.encode(80).unwrap()).unwrap()
         };
-        // 读回时按写入的方向旋转了，说明 EXIF 确实写进去了
+        // 读回时转了方向，说明 EXIF 写进去了
         let out = encode(ROTATED_TIFF, ROTATED_XMP);
         assert_eq!((out.width, out.height), (4, 8));
         assert!(out.exif.is_some());

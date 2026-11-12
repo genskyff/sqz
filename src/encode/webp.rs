@@ -14,7 +14,7 @@ pub struct WebpJob<'a> {
 
 impl<'a> WebpJob<'a> {
     pub fn new(width: u32, height: u32, rgba: Vec<u8>, meta: Metadata<'a>) -> Self {
-        // 给了 alpha 通道编码器就会单独存一份，不透明的图只传 RGB
+        // 给了 alpha 通道编码器就会单独存一份
         let (pixels, layout) = if is_opaque(&rgba) {
             let rgb = rgba
                 .as_chunks::<4>()
@@ -137,7 +137,7 @@ mod tests {
         };
         let job = WebpJob::new(8, 4, gradient(8, 4, 255), meta);
         for webp in [job.encode(80).unwrap(), job.lossless().unwrap()] {
-            // 读回时按写入的方向旋转了，说明 EXIF 确实写进去了
+            // 读回时转了方向，说明 EXIF 写进去了
             let out = decode(&webp).unwrap();
             assert_eq!((out.width, out.height), (4, 8));
             assert!(out.exif.is_some());

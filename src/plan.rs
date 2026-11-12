@@ -15,8 +15,7 @@ pub struct Plan {
     pub output: PathBuf,
 }
 
-/// 参数含 `*` 或 `?` 且不是现有文件时按通配符展开（PowerShell 和 cmd 不替程序展开），
-/// 结果去重；没有匹配的模式原样保留，由后续步骤报错。
+/// PowerShell 和 cmd 不展开通配符；匹配不到的原样留给后面报错
 pub fn expand_inputs(inputs: &[PathBuf]) -> Vec<PathBuf> {
     let options = glob::MatchOptions {
         case_sensitive: !cfg!(windows),
@@ -120,7 +119,7 @@ pub fn same_file(a: &Path, b: &Path) -> bool {
     }
 }
 
-/// 用于判断两个输出路径是否指向同一文件（文件可能还不存在）。
+/// 输出文件可能还不存在，用绝对路径判断是不是同一个
 pub fn path_key(path: &Path) -> String {
     let abs = std::path::absolute(path).unwrap_or_else(|_| path.to_path_buf());
     let key = abs.to_string_lossy().into_owned();

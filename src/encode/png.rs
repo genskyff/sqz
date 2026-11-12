@@ -10,25 +10,25 @@ use rayon::prelude::*;
 use super::{icc_matches, is_gray, is_opaque};
 use crate::meta::Metadata;
 
-/// 搜索时有损图用较快的 deflate 档位估算体积，定稿时再用最高档压一遍并取更小者。
-/// 无损图估算不准，搜索时也压到定稿，超过 `cap` 就停。
+/// 有损图搜索时用快速档位估算体积，定稿再用最高档压并取更小者。
+/// 无损估算不准，搜索时就压到定稿，超过 `cap` 即停。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Effort {
     Search { cap: u64 },
     Final,
 }
 
-/// 试探档位：用来比较滤波器和估算体积。更低的档位排序和最高档对不上，会挑错滤波器
+/// 更低的档位排序和最高档对不上，会挑错滤波器
 const PROBE_LEVEL: u8 = 6;
 const BEST_LEVEL: u8 = 9;
 
-/// 压缩比达到这个倍数的数据，最高档还能小很多且压得快，总是值得再压一遍。经验值，样本有限。
+/// 压缩比到这个倍数，最高档还能小很多且压得快，总是再压一遍。经验值
 const COMPRESSIBLE_RATIO: usize = 16;
 
-/// 压缩比不到 `COMPRESSIBLE_RATIO` 时，试探结果超出上限这个倍数就不用最高档再压。经验值，样本有限。
+/// 压缩比不到上面的倍数时，试探结果超出上限这么多倍就不再压。经验值
 const HOPELESS_MARGIN: f64 = 1.3;
 
-/// 只收下 `limit` 字节，再多就报错，借此让压缩中途停下。
+/// 超过 `limit` 字节就报错，让压缩中途停下
 struct Capped {
     out: Vec<u8>,
     limit: usize,
@@ -48,7 +48,6 @@ impl Write for Capped {
     }
 }
 
-/// PNG 的 IDAT、iCCP 都要求 zlib 包装。输出一超过 `limit` 字节就中止，返回 None。
 fn zlib_within(data: &[u8], level: u8, limit: usize) -> Option<Vec<u8>> {
     let sink = Capped {
         out: Vec::new(),
@@ -69,7 +68,7 @@ const COLOR_INDEXED: u8 = 3;
 const COLOR_GRAY_ALPHA: u8 = 4;
 const COLOR_RGBA: u8 = 6;
 
-/// 一次量化的结果，供定稿时复用：搜索最后试的质量往往就是要定稿的质量。
+/// 搜索最后试的质量往往就是要定稿的，留着量化结果复用
 struct Quantized {
     quality: u8,
     dither: f32,
@@ -77,7 +76,6 @@ struct Quantized {
     indices: Vec<u8>,
 }
 
-/// 可跨线程共享，搜索时并行试探。
 pub struct PngJob<'a> {
     width: u32,
     height: u32,
@@ -100,7 +98,7 @@ impl<'a> PngJob<'a> {
         dither: f32,
         meta: Metadata<'a>,
     ) -> Self {
-        // 全透明像素的 RGB 看不见，统一置零以利于压缩
+        // 全透明像素的 RGB 看不见，置零利于压缩
         for p in rgba.as_chunks_mut::<4>().0 {
             if p[3] == 0 {
                 p[..3].fill(0);
@@ -148,8 +146,7 @@ impl<'a> PngJob<'a> {
     }
 
     fn lossy(&self, quality: u8, best_within: Option<usize>) -> Result<Vec<u8>> {
-        // 抖动会在量化时烧进索引，缓存必须按（质量, 抖动）匹配。
-        // 用 Arc 把结果带出锁，压缩期间不占锁，几个试探可以并行跑。
+        // 抖动烧进了索引，缓存要连抖动一起匹配；用 Arc 带出锁，压缩时不占锁
         let cached = {
             let last = self
                 .last_quantized
@@ -227,11 +224,10 @@ impl<'a> PngJob<'a> {
     }
 }
 
-/// 一种 PNG 像素表示：未滤波的扫描线及其头信息。
 struct Raster {
     color_type: u8,
     bit_depth: u8,
-    /// 滤波时“左侧像素”的字节距离，不足 1 字节按 1 算
+    /// 滤波用的左侧像素距离，不足 1 字节按 1 算
     filter_bpp: usize,
     row_bytes: usize,
     rows: Vec<u8>,
@@ -267,7 +263,7 @@ impl Raster {
         }
     }
 
-    /// 调色板图：去掉未用到的颜色，半透明色排在前面以缩短 tRNS，并按颜色数选位深。
+    /// 半透明色排在前面，tRNS 才能截短
     fn indexed(palette: &[[u8; 4]], indices: &[u8], width: u32) -> Self {
         let mut used = [false; 256];
         for &i in indices {
@@ -365,10 +361,8 @@ const ALL_FILTERS: [Filter; 6] = [
 ];
 const INDEXED_FILTERS: [Filter; 2] = [Filter::Fixed(0), Filter::MinSum];
 
-/// 试各滤波策略，返回最小的 zlib 数据。
-///
-/// `best_within` 为 None 时只按试探档位估算；否则再用最高档压一遍，结果不超过这个字节数
-/// 且比试探结果小才采用。
+/// 按试探档位挑最小的滤波策略；给了 `best_within` 再用最高档压一遍，
+/// 不超过这个字节数且更小才采用。
 fn compress(raster: &Raster, best_within: Option<usize>) -> Vec<u8> {
     let filters: &[Filter] = if raster.color_type == COLOR_INDEXED || raster.bit_depth < 8 {
         &INDEXED_FILTERS
@@ -563,7 +557,7 @@ mod tests {
 
     #[test]
     fn lossless_roundtrip_palette_with_alpha() {
-        // 3 种颜色（含半透明）→ 2 位调色板，宽度不是 4 的倍数以覆盖行尾填充
+        // 3 种颜色用 2 位调色板，宽度不是 4 的倍数，覆盖行尾填充
         let colors = [[255, 0, 0, 255], [0, 0, 255, 128], [0, 0, 0, 0]];
         let src: Vec<u8> = (0..13 * 5).flat_map(|i| colors[i % 3]).collect();
         let png = PngJob::new(13, 5, src.clone(), 256, 1.0, Metadata::default())
@@ -572,7 +566,7 @@ mod tests {
         assert_eq!(decode(&png).unwrap().rgba, src);
     }
 
-    /// 16×16 的随机色块平铺：试探档位压出来比最高档大四成以上
+    /// 随机色块平铺：试探档位比最高档大四成以上
     fn tiles(width: u32, height: u32) -> Vec<u8> {
         let mut state = 5u32;
         let tile: Vec<u8> = (0..16 * 16)
@@ -593,8 +587,7 @@ mod tests {
     fn lossless_search_settles_within_cap() {
         let job = PngJob::new(480, 360, tiles(480, 360), 256, 1.0, Metadata::default());
         let best = job.encode(100, Effort::Final).unwrap();
-        // 上限为 0 时最高档立刻中止，得到试探结果；它比定稿大出 HOPELESS_MARGIN 以上，
-        // 下面的结论才不是靠余量得来的
+        // 上限为 0 得到试探结果；它得比定稿大出 HOPELESS_MARGIN 以上，下面才不是靠余量过关
         let estimate = job.encode(100, Effort::Search { cap: 0 }).unwrap();
         assert!(estimate.len() as f64 > best.len() as f64 * HOPELESS_MARGIN);
 
@@ -638,7 +631,7 @@ mod tests {
         };
         let job = PngJob::new(8, 4, gradient(8, 4), 256, 1.0, meta);
         for quality in [100, 50] {
-            // 读回时按写入的方向旋转了，说明 EXIF 确实写进去了
+            // 读回时转了方向，说明 EXIF 写进去了
             let out = decode(&job.encode(quality, Effort::Final).unwrap()).unwrap();
             assert_eq!((out.width, out.height), (4, 8));
             assert!(out.exif.is_some());

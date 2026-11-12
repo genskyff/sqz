@@ -3,35 +3,39 @@ use std::ops::RangeInclusive;
 use anyhow::Result;
 
 pub enum Fit {
-    /// 不超过上限的最高质量结果
-    Found { quality: u8, data: Vec<u8> },
-    /// 质量降到下限仍超出上限；附带试过的最小结果
-    Unreachable { quality: u8, data: Vec<u8> },
+    Found {
+        quality: u8,
+        data: Vec<u8>,
+    },
+    /// 带着试过的最小结果
+    Unreachable {
+        quality: u8,
+        data: Vec<u8>,
+    },
 }
 
 pub struct SearchResult {
     pub fit: Fit,
     pub tries: u32,
-    /// 每次试探的 (质量, 估算体积)，按试探先后排列
+    /// (质量, 估算体积)，按试探先后
     pub probes: Vec<(u8, usize)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Order {
-    /// 先试上限，失败后在下面二分。适合体积随质量大致单调的编码，如 JPEG
+    /// 先试上限，失败后往下二分
     Ceiling,
-    /// 上限走另一条编码路径（PNG 的 q100 是无损），它超限说明不了有损区间：上限失败后
-    /// 先试下限，下限也超限就收工。`parallel` 时上限、次上限、下限在第一轮一起并行试
+    /// 上限走另一条编码路径，超限说明不了有损区间：再试下限，也超限就收工。
+    /// `parallel` 时上限、次上限、下限一起试
     SplitCeiling { parallel: bool },
-    /// 先试下限，超限就收工；可行时，下限体积离上限不到 `GALLOP_RATIO` 倍就从小往大
-    /// 倍增，否则直接二分
+    /// 先试下限，超限就收工；下限体积离上限不到 `GALLOP_RATIO` 倍就倍增，否则二分
     Floor,
 }
 
-/// 上限不超过下限体积的这个倍数时，答案多半贴着下限，倍增比二分省。经验值，样本有限。
+/// 上限不到下限体积的这么多倍时，答案多半贴着下限，倍增比二分省。经验值
 const GALLOP_RATIO: f64 = 3.0;
 
-/// 估算体积折算后仍在上限的这个倍数以内，才值得用定稿档位复测。经验值，样本有限。
+/// 折算后的估算在上限的这么多倍以内才值得复测。经验值
 const RETEST_MARGIN: f64 = 1.3;
 
 /// 在 [lo, hi] 中找输出不超过 `cap` 字节的最高质量；体积偶有回落也只认真正不超限的。
@@ -45,7 +49,7 @@ pub fn fit_size(
     mut encode: impl FnMut(&[u8]) -> Result<Vec<Vec<u8>>>,
 ) -> Result<SearchResult> {
     let lo = lo.min(hi);
-    // 候选从高到低排列，hi 与 lo 相邻或相等时 dedup 去掉重复
+    // hi 与 lo 相邻或相等时会重复
     let mut first = match order {
         Order::Floor => vec![lo],
         Order::SplitCeiling { parallel: true } => vec![hi, hi.saturating_sub(1).max(lo), lo],
@@ -62,7 +66,7 @@ pub fn fit_size(
 
     match order {
         Order::Floor => {
-            // 下限都超限就到此为止，不去试更贵的高质量
+            // 下限都超限就到此为止
             if let Some((_, data)) = &search.best {
                 if cap as f64 <= data.len() as f64 * GALLOP_RATIO {
                     search.gallop(hi)?;
@@ -81,10 +85,8 @@ pub fn fit_size(
     Ok(search.finish())
 }
 
-/// 从已知不超限的 `quality` 往上找，返回 (质量, 数据, 编码次数)。
-///
-/// 搜索按快速档位估算体积，定稿体积更小，估算时超限的更高质量也可能放得下。
-/// `encode` 应按定稿档位编码；先倍增步长，越界后在缺口里二分，最多补测到 `hi`。
+/// 从不超限的 `quality` 往上找，返回 (质量, 数据, 编码次数)：定稿比估算小，估算时超限的
+/// 更高质量也可能放得下。先倍增，越界后在缺口里二分；`encode` 按定稿档位编码。
 pub fn climb(
     quality: u8,
     data: Vec<u8>,
@@ -116,15 +118,9 @@ pub fn climb_start(quality: u8, hi: u8) -> Vec<u8> {
     start
 }
 
-/// 按定稿档位从高到低复测 `candidates` 里的质量，返回第一个不超限的。
-///
-/// 体积随质量不一定单调（调色板图在低质量时抖动反而更大），估算又偏大，搜索可能把
-/// 最高的质量误判为超限，而 [`climb`] 从低处倍增爬不过中间的高峰。只测高于 `above`、
-/// 且估算不超过 `cap × RETEST_MARGIN` 的质量；没试探过的质量借用试探过的最近更高
-/// 质量的估算。`encode` 应按定稿档位编码。
-///
-/// 估算偏大多少因图而异，比较前先除以 `gap`：这张图上已定稿的那个质量的估算体积
-/// 与定稿体积之比。
+/// 体积不一定单调，估算又偏大，最高的质量可能被误判超限，而 [`climb`] 爬不过中间的高峰：
+/// 从高到低复测估算够近的质量，没试探过的借用最近更高质量的估算。
+/// `gap` 是这张图上估算体积与定稿体积之比。
 pub fn retest_top(
     candidates: RangeInclusive<u8>,
     above: Option<u8>,
@@ -218,7 +214,7 @@ impl<'a> Search<'a> {
         Ok(self.record(q, data))
     }
 
-    /// 还没测过的质量区间：已知可行之上、已知超限之下，再夹在 [floor, ceiling] 里。
+    /// 已知可行之上、已知超限之下，再夹在 [floor, ceiling] 里
     fn untested(&self, floor: u8, ceiling: u8) -> (i32, i32) {
         let low = self
             .best
@@ -320,7 +316,7 @@ mod tests {
 
     #[test]
     fn ceiling_unreachable_bisects_down_to_floor() {
-        // JPEG 不提前试下限：常见的可达场景少一次编码，代价是达不到时要二分到底
+        // 不提前试下限：可达时少一次编码，达不到时要二分到底
         let r = fit_size(1, 95, 5, Order::Ceiling, false, single).unwrap();
         assert_eq!((found(&r), r.tries, size_of(&r)), (None, 7, 10));
     }
@@ -357,7 +353,6 @@ mod tests {
 
     #[test]
     fn floor_fails_in_one_try() {
-        // 连最低质量都超限，最贵的上限不该被试
         let r = fit_size(1, 95, 5, Order::Floor, false, single).unwrap();
         assert_eq!((found(&r), r.tries, size_of(&r)), (None, 1, 10));
     }
@@ -371,7 +366,7 @@ mod tests {
 
     #[test]
     fn floor_bisects_when_cap_is_far_from_floor_size() {
-        // 比值 55.5：直接二分，比倍增（12 次）省
+        // 比值 55.5：直接二分，倍增要 12 次
         let r = fit_size(1, 95, 555, Order::Floor, false, single).unwrap();
         assert_eq!(found(&r), Some(55));
         assert!(r.tries <= 8, "{} 次", r.tries);
@@ -400,7 +395,7 @@ mod tests {
 
     #[test]
     fn parallel_first_round_tries_the_second_ceiling() {
-        // 体积 = 质量 × 10：上限 100 超限（1000 > 990），次上限 99 正好可行
+        // 上限 100 是 1000 字节，超限；次上限 99 正好可行
         let r = fit_size(1, 100, 990, PARALLEL, false, single).unwrap();
         assert_eq!((found(&r), r.tries), (Some(99), 3));
         let r = fit_size(1, 100, 990, SEQUENTIAL, false, single).unwrap();
@@ -434,7 +429,7 @@ mod tests {
 
     #[test]
     fn never_returns_oversized_on_non_monotonic_sizes() {
-        // 质量 60 处体积回落，但结果必须真的不超上限
+        // 质量 60 处体积回落
         let bumpy = |qs: &[u8]| {
             Ok(qs
                 .iter()
@@ -558,7 +553,6 @@ mod tests {
 
     #[test]
     fn retest_borrows_estimate_for_untested_quality() {
-        // 不并行时 q99 可能没试过，借用 q100 的估算
         let probes = [(100, 8_606), (1, 8_146)];
         let mut tested = Vec::new();
         let hit = retest_top(99..=100, None, 7_168, 1.0, &probes, |q| {

@@ -3,23 +3,21 @@ use std::ops::Range;
 
 use image::metadata::Orientation;
 
-/// 要写进输出的元数据，EXIF、XMP 已按输出调整好
+/// 写进输出的元数据：EXIF 是裸 TIFF，XMP 是 XML，都已按输出改好
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Metadata<'a> {
     pub icc: Option<&'a [u8]>,
-    /// 裸 TIFF 格式
     pub exif: Option<&'a [u8]>,
-    /// XMP 包的 XML 文本
     pub xmp: Option<&'a [u8]>,
 }
 
-/// 统一成裸 TIFF：去掉 JPEG 式的 `Exif\0\0` 前缀，丢弃不是 TIFF 的数据。
+/// 去掉 JPEG 式的 `Exif\0\0` 前缀，不是 TIFF 的丢弃
 pub fn tiff_exif(raw: &[u8]) -> Option<&[u8]> {
     let tiff = raw.strip_prefix(b"Exif\0\0").unwrap_or(raw);
     (tiff.starts_with(b"II*\0") || tiff.starts_with(b"MM\0*")).then_some(tiff)
 }
 
-/// 方向已应用到像素上：方向改成正常、尺寸改成输出尺寸，否则看图软件会再转一次、读到错的宽高。
+/// 像素已转正：方向改成正常、尺寸改成输出尺寸，否则看图软件会再转一次
 pub fn exif_for_output(raw: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
     let mut exif = tiff_exif(raw)?.to_vec();
     let _ = Orientation::remove_from_exif_chunk(&mut exif);
@@ -27,7 +25,7 @@ pub fn exif_for_output(raw: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
     Some(exif)
 }
 
-/// 图像的旋转、镜像：先按需转置（x、y 对调），再按需左右、上下翻转。
+/// 旋转和镜像：先转置，再左右、上下翻转
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Reorientation {
     transpose: bool,
@@ -68,8 +66,7 @@ impl Reorientation {
     }
 }
 
-/// XMP 里的方向和尺寸同 EXIF 一样改成输出后的值，MWG 区域按 `regions` 换到输出像素上；
-/// 不是 UTF-8 的 XMP 无法改写，丢弃。
+/// 方向和尺寸同 EXIF 一样改掉，MWG 区域按 `regions` 换到输出像素上；不是 UTF-8 的丢弃
 pub fn xmp_for_output(
     raw: &[u8],
     width: u32,
@@ -90,7 +87,7 @@ pub fn xmp_for_output(
     ] {
         set_values(&mut xml, name, &value.to_string());
     }
-    // MWG 规范要求区域坐标相对于应用 EXIF 方向之前的图像，输出已经转正，区域也得跟着转
+    // MWG 的区域坐标相对于应用 EXIF 方向之前的图像，像素转正了区域也得跟着转
     if regions != Reorientation::default() {
         let stored = if regions.transpose {
             (height, width)
@@ -109,8 +106,7 @@ pub fn xmp_for_output(
     {
         let mut dims = xml[range.clone()].to_owned();
         let pixel = value(&dims, "stDim:unit").is_none_or(|unit| unit == "pixel");
-        // 没转像素，记录的尺寸却横竖颠倒：区域是源文件里没随旋转更新的旧坐标，无从得知当初怎么转的，
-        // 尺寸原样保留，不掩盖这个不一致
+        // 没转像素，记录的尺寸却横竖颠倒：区域是没随旋转更新的旧坐标，尺寸原样保留，不掩盖这个不一致
         let stale = regions == Reorientation::default()
             && value(&dims, "stDim:w")
                 .zip(value(&dims, "stDim:h"))
@@ -125,7 +121,7 @@ pub fn xmp_for_output(
     Some(xml.into_bytes())
 }
 
-/// 区域的中心点和宽高按 `turn` 换算；圆的直径相对于短边，转了也不变。看不懂的区域返回 None，原样保留。
+/// 圆的直径相对于短边，转了不变；看不懂的区域返回 None
 fn reorient_area(
     area: &str,
     turn: Reorientation,
@@ -170,7 +166,7 @@ fn reorient_area(
     Some(area)
 }
 
-/// 每个 `<name ...>` 元素的范围：自闭合的到 `/>`，否则到 `</name>`。
+/// 每个 `<name ...>` 元素的范围：自闭合的到 `/>`，否则到 `</name>`
 fn element_ranges(xml: &str, name: &str) -> Vec<Range<usize>> {
     let open = format!("<{name}");
     let close = format!("</{name}>");
@@ -179,7 +175,7 @@ fn element_ranges(xml: &str, name: &str) -> Vec<Range<usize>> {
     while let Some(found) = xml[from..].find(&open) {
         let start = from + found;
         from = start + open.len();
-        // 名字后面必须是空白、`>` 或 `/`，免得匹配到更长的名字
+        // 免得匹配到更长的名字
         if !xml[from..].starts_with(|c: char| c.is_whitespace() || c == '>' || c == '/') {
             continue;
         }
@@ -200,8 +196,7 @@ fn element_ranges(xml: &str, name: &str) -> Vec<Range<usize>> {
     ranges
 }
 
-/// 简单属性 `name` 在 `from` 之后第一处值的范围，`name="v"`、`name='v'`、`<name>v</name>` 三种写法都认。
-/// 名字紧跟在名字字符后面的不算，免得 `tiff:Orientation` 匹配到别的前缀里。
+/// `name="v"`、`name='v'`、`<name>v</name>` 三种写法都认；前面紧挨名字字符的不算，免得匹配到别的前缀里
 fn value_range(xml: &str, name: &str, from: usize) -> Option<Range<usize>> {
     let forms = [
         (format!("{name}=\""), '"'),
@@ -244,8 +239,7 @@ const EXIF_IFD: u16 = 0x8769;
 const PIXEL_X_DIMENSION: u16 = 0xA002;
 const PIXEL_Y_DIMENSION: u16 = 0xA003;
 
-/// 改写 IFD0 的 ImageWidth/ImageLength 和 Exif IFD 的 PixelXDimension/PixelYDimension。
-/// 只改已有的条目，原地改写，不增删条目，偏移都不变。
+/// 改 IFD0 的 ImageWidth/ImageLength 和 Exif IFD 的 PixelX/YDimension；只原地改已有条目，偏移不变
 fn set_exif_dimensions(exif: &mut [u8], width: u32, height: u32) {
     let big_endian = exif.starts_with(b"MM");
     let mut tiff = Tiff {
@@ -314,7 +308,7 @@ impl Tiff<'_> {
         self.data[at..at + 4].copy_from_slice(&bytes);
     }
 
-    /// IFD 里各条目（每条 12 字节）的偏移；条目表越界时当作空表
+    /// 各条目的偏移，每条 12 字节；条目表越界当作空表
     fn entries(&self, ifd: usize) -> StepBy<Range<usize>> {
         let start = ifd.saturating_add(2);
         let count = self.u16(ifd).map_or(0, usize::from);
@@ -344,7 +338,7 @@ impl Tiff<'_> {
     }
 }
 
-/// 只含 Orientation=6（顺时针转 90°）的小端 TIFF
+/// 只含 Orientation=6 的小端 TIFF，即顺时针转 90°
 #[cfg(test)]
 pub const ROTATED_TIFF: &[u8] = b"II*\0\x08\0\0\0\x01\0\x12\x01\x03\0\x01\0\0\0\x06\0\0\0\0\0\0\0";
 
@@ -371,7 +365,7 @@ mod tests {
     }
 
     /// IFD0：ImageWidth(SHORT)、ImageLength(LONG)、Orientation=6、Exif IFD 指针；
-    /// Exif IFD：PixelXDimension、PixelYDimension（都是 SHORT）。返回数据和各尺寸条目的偏移。
+    /// Exif IFD：两个 SHORT 的 PixelX/YDimension
     fn tiff_with_dimensions(big_endian: bool) -> (Vec<u8>, [usize; 4]) {
         let mut t = Vec::new();
         let u16b = |v: u16| {
@@ -572,7 +566,7 @@ mod tests {
 
     #[test]
     fn xmp_keeps_stale_regions() {
-        // 源文件已转正但区域没更新（尺寸横竖颠倒），sqz 也没转像素：区域和尺寸都原样保留
+        // 源文件已转正但区域没更新，尺寸横竖颠倒，sqz 也没转像素：区域和尺寸都原样保留
         let stale = concat!(
             r#"<mwg-rs:AppliedToDimensions stDim:w="5712" stDim:h="4284" stDim:unit="pixel"/>"#,
             r#"<mwg-rs:Area stArea:x="0.6" stArea:y="0.5" stArea:w="0.1" stArea:h="0.2" stArea:unit="normalized"/>"#,

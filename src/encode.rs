@@ -48,7 +48,7 @@ impl OutputFormat {
         )
     }
 
-    /// 只给 --max-size 时的质量上限：有损格式超过 95 体积暴涨而肉眼难辨；PNG 从无损开始试
+    /// 有损格式超过 95 体积暴涨而肉眼难辨
     pub fn size_mode_ceiling(self) -> u8 {
         match self {
             OutputFormat::Jpeg | OutputFormat::Webp => 95,
@@ -56,7 +56,6 @@ impl OutputFormat {
         }
     }
 
-    /// 未给 --min-quality 时的质量下限：PNG 降质靠减少颜色，低于 30 时只剩几种颜色
     pub fn size_mode_floor(self) -> u8 {
         match self {
             OutputFormat::Jpeg | OutputFormat::Webp => 1,
@@ -109,7 +108,6 @@ impl<'a> Encoder<'a> {
         }
     }
 
-    /// --convert-only 的编码：PNG、WebP 无损，JPEG 没有无损模式，用最高质量
     pub fn convert(&self) -> Result<Vec<u8>> {
         match self {
             Encoder::Jpeg(job) => job.encode(100),
@@ -118,8 +116,7 @@ impl<'a> Encoder<'a> {
         }
     }
 
-    /// PNG 搜索时用的是快速档位，定稿再用最高档重压并取更小者，因此不会超出上限。
-    /// 无损在搜索时已压到定稿，放进了 `cap` 的不必重压。
+    /// 无损搜索时已压到定稿，放得进 `cap` 就不重压
     pub fn refine(&self, quality: u8, searched: Vec<u8>, cap: u64) -> Result<Vec<u8>> {
         match self {
             Encoder::Png(_) if quality >= 100 && searched.len() as u64 <= cap => Ok(searched),
@@ -164,7 +161,7 @@ fn is_gray(rgba: &[u8]) -> bool {
         .all(|p| p[0] == p[1] && p[1] == p[2])
 }
 
-/// ICC 头部第 16-19 字节是颜色空间；只有和输出颜色模型一致的配置才能嵌入。
+/// ICC 头第 16-19 字节是颜色空间，和输出的颜色模型一致才能嵌入
 fn icc_matches(icc: &[u8], gray: bool) -> bool {
     icc.get(16..20) == Some(if gray { &b"GRAY"[..] } else { &b"RGB "[..] })
 }

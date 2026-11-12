@@ -96,7 +96,7 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// 要去掉的元数据，依次是 ICC、EXIF、XMP
+    /// 依次是 ICC、EXIF、XMP
     pub fn strips(&self) -> (bool, bool, bool) {
         (
             self.strip_all || self.strip_icc,

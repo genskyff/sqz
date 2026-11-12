@@ -16,20 +16,18 @@ pub enum InputFormat {
 
 pub const UNSUPPORTED_INPUT: &str = "不支持的输入格式，仅支持 PNG、JPEG、HEIC、WebP";
 
-/// 解码后的 8-bit RGBA 像素，方向已应用到像素上。
+/// 8-bit RGBA，方向已应用到像素上；EXIF 是裸 TIFF，XMP 是 XML，方向和尺寸都已按输出改好
 pub struct Decoded {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
     pub icc: Option<Vec<u8>>,
-    /// 裸 TIFF 格式的 EXIF，方向和尺寸已改成输出后的值
     pub exif: Option<Vec<u8>>,
-    /// XMP 包的 XML，方向和尺寸已改成输出后的值
     pub xmp: Option<Vec<u8>>,
 }
 
 impl Decoded {
-    /// `regions` 是把 XMP 里的 MWG 区域从记录时的坐标系换到输出像素的变换
+    /// `regions`：MWG 区域从记录时的坐标系到输出像素的变换
     fn new(
         width: u32,
         height: u32,
@@ -109,7 +107,7 @@ fn decode_with_image(data: &[u8], image_format: ImageFormat) -> Result<Decoded> 
 }
 
 fn decode_heic(data: &[u8]) -> Result<Decoded> {
-    // heic 会按 irot/imir 应用旋转镜像；HEIF 规范下 EXIF 里的方向不再生效
+    // heic 已按 irot/imir 转好；按 HEIF 规范 EXIF 方向不生效
     let config = heic::DecoderConfig::new();
     let out = config
         .decode(data, heic::PixelLayout::Rgba8)
@@ -123,8 +121,7 @@ fn decode_heic(data: &[u8]) -> Result<Decoded> {
     let xmp = config
         .extract_xmp(data)
         .map_err(|e| anyhow!("读取 HEIC 的 XMP 失败：{e}"))?;
-    // iPhone 的 HEIC 可能已按竖图存储、不带 irot，EXIF 方向却仍记着相对传感器的旋转，MWG 区域也按传感器方向写，
-    // 所以区域优先按 EXIF 方向换算，EXIF 没写方向时才按 irot/imir
+    // iPhone 的 HEIC 可能不带 irot，EXIF 方向和 MWG 区域却仍按传感器方向写：区域优先按 EXIF 方向换算
     let regions = exif
         .as_deref()
         .and_then(tiff_exif)
@@ -145,8 +142,7 @@ fn decode_heic(data: &[u8]) -> Result<Decoded> {
     ))
 }
 
-/// heic 解码时按 ipma 的顺序应用 imir、irot，这里按同样的顺序组合出整体变换。
-/// irot 已被换算成顺时针角度；imir 的 axis 0 上下翻转、1 左右翻转，与 heic 的实现一致。
+/// 按 heic 解码的顺序组合 imir、irot。irot 是顺时针角度；imir 的 axis 0 上下翻、1 左右翻
 fn heic_reorientation(data: &[u8]) -> Reorientation {
     use heic::heif::Transform;
     let item = heic::heif::parse(data, &heic::Unstoppable)
@@ -180,7 +176,7 @@ fn decode_webp(data: &[u8]) -> Result<Decoded> {
     }
     let (rgba, width, height) =
         zenwebp::oneshot::decode_rgba(data).map_err(|e| anyhow!("WebP 解码失败：{e}"))?;
-    // WebP 解码不会应用 EXIF 方向。规范要求 EXIF 是裸 TIFF，但有的写入方会带上 JPEG 式前缀
+    // WebP 解码不应用 EXIF 方向；有的写入方给 EXIF 带上 JPEG 式前缀
     let orientation = info
         .exif
         .as_deref()

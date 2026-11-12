@@ -98,13 +98,13 @@ fn fit_to_cap(
     report: &mut Report,
 ) -> Result<(Vec<u8>, Status)> {
     let ceiling = cli.quality.unwrap_or(format.size_mode_ceiling());
-    // 下限不能高于上限，否则显式给的低 -q 会被默认下限顶掉，关抖动重试也会被跳过
+    // 下限高于上限的话，显式给的低 -q 会被默认下限顶掉
     let min_quality = cli
         .min_quality
         .unwrap_or(format.size_mode_floor())
         .min(ceiling);
     let is_png = matches!(format, OutputFormat::Png);
-    // PNG 的 q100 走无损路径，和有损区间是两条体积曲线
+    // PNG 的 q100 是无损，和有损区间是两条体积曲线
     let split = is_png && ceiling >= 100;
     // 并行试探各占一份编码内存；多文件时线程已被占满，大图内存吃紧，都逐个试
     let parallel =
@@ -120,8 +120,7 @@ fn fit_to_cap(
         encode_all(encoder, qs, probe, parallel)
     })?;
     let mut probes = std::mem::take(&mut result.probes);
-    // 抖动噪点让 PNG 很难再变小：未指定 --dither 时，达不到上限就关掉抖动再搜一次。
-    // 无损和抖动无关，所以重试的上限是 99
+    // 抖动噪点让 PNG 压不小，关掉再搜；无损与抖动无关，上限取 99
     let ditherless_ceiling = ceiling.min(99);
     if matches!(result.fit, Fit::Unreachable { .. })
         && cli.dither.is_none()
@@ -151,7 +150,7 @@ fn fit_to_cap(
         mut quality,
         data: searched,
     }) = result.fit;
-    // 搜索用快速档位估算，体积偏大；是否达标以定稿体积为准
+    // 搜索时的估算偏大，是否达标以定稿为准
     let searched_len = searched.len();
     let hi = search_ceiling.min(99);
     if parallel && is_png && found {
@@ -168,7 +167,7 @@ fn fit_to_cap(
     // JPEG、WebP 的估算就是定稿体积，不必复测
     let mut top = None;
     if is_png {
-        // 无损的结论搜索时已确定，上限是无损时只复测 99；上限有损时复测它和下一档
+        // 无损搜索时已有定论，只复测 99；上限有损时复测它和下一档
         let lowest = if split { 99 } else { ceiling.saturating_sub(1) };
         let candidates = lowest.max(min_quality)..=ceiling.min(99);
         let gap = searched_len as f64 / data.len() as f64;
@@ -191,7 +190,7 @@ fn fit_to_cap(
             (quality, data) = (q, d);
             fits = true;
         }
-        // 定稿比估算小，更高的质量也可能放得下；只在有损区间里爬
+        // 定稿比估算小，更高的质量也可能放得下
         None if fits && data.len() < searched_len => {
             let (q, d, tries) = climb(quality, data, hi, cap, parallel, |qs| {
                 encode_all(encoder, qs, Effort::Final, parallel)
@@ -222,7 +221,6 @@ fn fit_to_cap(
     Ok((data, status))
 }
 
-/// 先写临时文件再改名，中途失败不会留下半截输出。
 fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         fs::create_dir_all(dir).with_context(|| format!("无法创建目录 {}", dir.display()))?;
