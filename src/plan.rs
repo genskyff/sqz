@@ -163,6 +163,23 @@ mod tests {
     }
 
     #[test]
+    fn plans_sample_images() {
+        for (name, format, output) in [
+            ("sample.heic", OutputFormat::Jpeg, "sample.jpg"),
+            ("sample.jpeg", OutputFormat::Jpeg, "sample.jpeg"),
+            ("sample.jpg", OutputFormat::Jpeg, "sample.jpg"),
+            ("sample.png", OutputFormat::Png, "sample.png"),
+            ("sample.webp", OutputFormat::Webp, "sample.webp"),
+        ] {
+            let input = decode::sample(name);
+            let cli = Cli::try_parse_from(["sqz", "a", "-d", "out", "-y"]).unwrap();
+            let plan = plan(&cli, &input).unwrap();
+            assert_eq!(plan.format, format, "{name}");
+            assert_eq!(plan.output, Path::new("out").join(output), "{name}");
+        }
+    }
+
+    #[test]
     fn explicit_format_prefers_flag_over_extension() {
         let explicit = |args: &[&str]| {
             explicit_format(&Cli::try_parse_from(["sqz", "a"].iter().chain(args)).unwrap())

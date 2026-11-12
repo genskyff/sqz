@@ -320,6 +320,30 @@ mod tests {
     }
 
     #[test]
+    fn sample_images_shrink_and_fit_max_size() {
+        // debug 构建下解码大图慢，几张一起跑
+        [
+            ("sample.heic", (4000, 3000), (256, 192)),
+            ("sample.jpg", (1920, 1280), (256, 171)),
+            ("sample.png", (1920, 1280), (256, 171)),
+            ("sample.webp", (4275, 2451), (256, 147)),
+        ]
+        .par_iter()
+        .for_each(|&(name, input, output)| {
+            let original = fs::read(decode::sample(name)).unwrap();
+            let args = ["-e", "256", "-f", "webp", "-s", "10KB"];
+            let (report, data) = run(name, &original, &args);
+            assert_eq!(report.status, Status::Ok, "{name}");
+            assert_eq!(sizes(&report), [Some(input), Some(output)], "{name}");
+            assert!(data.len() <= 10_000, "{name}");
+            let decoded = decode::decode(&data).unwrap();
+            assert_eq!((decoded.width, decoded.height), output, "{name}");
+            // 只有 HEIC 样张带 EXIF，要跟到输出里
+            assert_eq!(decoded.exif.is_some(), name == "sample.heic", "{name}");
+        });
+    }
+
+    #[test]
     fn resized_output_never_falls_back_to_the_original() {
         let input = noise(OutputFormat::Jpeg, 64, 48, 1);
         // 没缩小时照旧：同格式压不小就保留原图

@@ -322,6 +322,14 @@ fn decode_webp(data: &[u8]) -> Result<Decoded> {
     ))
 }
 
+/// `assets/` 下样张的路径
+#[cfg(test)]
+pub fn sample(name: &str) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("assets")
+        .join(name)
+}
+
 #[cfg(test)]
 mod tests {
     use image::imageops::{self, FilterType};
