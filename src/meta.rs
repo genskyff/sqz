@@ -364,8 +364,7 @@ mod tests {
         assert_eq!(exif_for_output(b"not exif", 4, 8), None);
     }
 
-    /// IFD0：ImageWidth(SHORT)、ImageLength(LONG)、Orientation=6、Exif IFD 指针；
-    /// Exif IFD：两个 SHORT 的 PixelX/YDimension
+    /// 返回 TIFF 和四个尺寸条目的偏移；ImageLength 是 LONG，其余是 SHORT
     fn tiff_with_dimensions(big_endian: bool) -> (Vec<u8>, [usize; 4]) {
         let mut t = Vec::new();
         let u16b = |v: u16| {
@@ -509,7 +508,7 @@ mod tests {
 
     #[test]
     fn xmp_regions_follow_rotation() {
-        // iPhone 的写法：元素形式，坐标和 AppliedToDimensions 都按转正前的横图
+        // 元素形式，坐标按转正前的横图
         let apple = concat!(
             r#"<mwg-rs:Regions rdf:parseType="Resource"><mwg-rs:RegionList><rdf:Seq>"#,
             r#"<rdf:li rdf:parseType="Resource"><mwg-rs:Area rdf:parseType="Resource">"#,
@@ -534,7 +533,7 @@ mod tests {
                 .replace("<stDim:w>5712<", "<stDim:w>4284<")
         );
 
-        // MWG 规范示例的属性写法，另含一个圆形区域
+        // 属性形式，含一个圆形区域
         let spec = concat!(
             r#"<mwg-rs:AppliedToDimensions stDim:w="4288" stDim:h="2848" stDim:unit="pixel"/>"#,
             r#"<mwg-rs:Area stArea:x="0.2" stArea:y="0.25" stArea:w="0.06" stArea:h="0.09" stArea:unit="normalized"/>"#,
@@ -566,7 +565,7 @@ mod tests {
 
     #[test]
     fn xmp_keeps_stale_regions() {
-        // 源文件已转正但区域没更新，尺寸横竖颠倒，sqz 也没转像素：区域和尺寸都原样保留
+        // 源文件已转正但区域没更新，尺寸横竖颠倒
         let stale = concat!(
             r#"<mwg-rs:AppliedToDimensions stDim:w="5712" stDim:h="4284" stDim:unit="pixel"/>"#,
             r#"<mwg-rs:Area stArea:x="0.6" stArea:y="0.5" stArea:w="0.1" stArea:h="0.2" stArea:unit="normalized"/>"#,

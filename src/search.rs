@@ -316,7 +316,6 @@ mod tests {
 
     #[test]
     fn ceiling_unreachable_bisects_down_to_floor() {
-        // 不提前试下限：可达时少一次编码，达不到时要二分到底
         let r = fit_size(1, 95, 5, Order::Ceiling, false, single).unwrap();
         assert_eq!((found(&r), r.tries, size_of(&r)), (None, 7, 10));
     }
@@ -359,14 +358,14 @@ mod tests {
 
     #[test]
     fn floor_gallops_when_cap_is_near_floor_size() {
-        // 下限 10 字节，上限 25 字节：比值 2.5，倍增 2、4，再二分 3
+        // 比值 2.5：倍增 2、4，再二分 3
         let r = fit_size(1, 95, 25, Order::Floor, false, single).unwrap();
         assert_eq!((found(&r), r.tries), (Some(2), 4));
     }
 
     #[test]
     fn floor_bisects_when_cap_is_far_from_floor_size() {
-        // 比值 55.5：直接二分，倍增要 12 次
+        // 比值 55.5，倍增要 12 次
         let r = fit_size(1, 95, 555, Order::Floor, false, single).unwrap();
         assert_eq!(found(&r), Some(55));
         assert!(r.tries <= 8, "{} 次", r.tries);
@@ -395,7 +394,6 @@ mod tests {
 
     #[test]
     fn parallel_first_round_tries_the_second_ceiling() {
-        // 上限 100 是 1000 字节，超限；次上限 99 正好可行
         let r = fit_size(1, 100, 990, PARALLEL, false, single).unwrap();
         assert_eq!((found(&r), r.tries), (Some(99), 3));
         let r = fit_size(1, 100, 990, SEQUENTIAL, false, single).unwrap();
@@ -429,7 +427,6 @@ mod tests {
 
     #[test]
     fn never_returns_oversized_on_non_monotonic_sizes() {
-        // 质量 60 处体积回落
         let bumpy = |qs: &[u8]| {
             Ok(qs
                 .iter()
@@ -467,7 +464,7 @@ mod tests {
         assert_eq!((q, tries), (95, 0));
     }
 
-    /// 仿调色板截图的定稿体积：低质量颜色少、高质量颜色全，中间反而最大
+    /// 仿调色板截图：定稿体积两头小、中间大
     fn u_final(q: u8) -> Vec<u8> {
         let size = match q {
             0..=3 => 6_788,
@@ -491,7 +488,6 @@ mod tests {
 
     #[test]
     fn retest_reaches_top_candidate_misjudged_by_estimate() {
-        // 估算全部超限；定稿后 q1 放得下，但往上爬会撞上中间的高峰，必须靠复测拿到 q99
         let cap = 7_168;
         let r = fit_size(1, 100, cap, PARALLEL, false, u_estimate).unwrap();
         let Fit::Unreachable { quality, .. } = r.fit else {
@@ -535,7 +531,7 @@ mod tests {
 
     #[test]
     fn retest_scales_estimates_by_measured_gap() {
-        // 估算比定稿大 50%，超出了 RETEST_MARGIN：不知道这个比例时不值得测，知道了就该测
+        // 估算比定稿大 50%，超出 RETEST_MARGIN
         let probes = [(100, 10_758), (99, 10_740)];
         let hit = retest_top(
             99..=100,
@@ -605,7 +601,6 @@ mod tests {
             }
         }
         check(single);
-        // 体积不单调时也一样
         check(|qs| {
             let size = |q: u8| {
                 if q.is_multiple_of(7) {
@@ -627,7 +622,7 @@ mod tests {
         })
         .unwrap();
         assert_eq!((found(&r), r.tries), (Some(55), 8));
-        // 每轮带上不超限、超限两种情况下的下一个质量，一轮定两步
+        // 每轮带上两种结果各自的下一步
         assert_eq!(
             rounds,
             [

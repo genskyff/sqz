@@ -557,7 +557,7 @@ mod tests {
 
     #[test]
     fn lossless_roundtrip_palette_with_alpha() {
-        // 3 种颜色用 2 位调色板，宽度不是 4 的倍数，覆盖行尾填充
+        // 2 位调色板，宽度不是 4 的倍数，覆盖行尾填充
         let colors = [[255, 0, 0, 255], [0, 0, 255, 128], [0, 0, 0, 0]];
         let src: Vec<u8> = (0..13 * 5).flat_map(|i| colors[i % 3]).collect();
         let png = PngJob::new(13, 5, src.clone(), 256, 1.0, Metadata::default())
@@ -587,7 +587,7 @@ mod tests {
     fn lossless_search_settles_within_cap() {
         let job = PngJob::new(480, 360, tiles(480, 360), 256, 1.0, Metadata::default());
         let best = job.encode(100, Effort::Final).unwrap();
-        // 上限为 0 得到试探结果；它得比定稿大出 HOPELESS_MARGIN 以上，下面才不是靠余量过关
+        // 上限为 0 拿到试探结果；它比定稿大出 HOPELESS_MARGIN，下面才不是靠余量过关
         let estimate = job.encode(100, Effort::Search { cap: 0 }).unwrap();
         assert!(estimate.len() as f64 > best.len() as f64 * HOPELESS_MARGIN);
 
@@ -610,7 +610,6 @@ mod tests {
 
     #[test]
     fn dither_off_recomputes_quantization() {
-        // 抖动烧进了索引，关掉抖动后不能复用之前的量化结果
         let src = gradient(64, 64);
         let mut job = PngJob::new(64, 64, src.clone(), 256, 1.0, Metadata::default());
         job.encode(50, Effort::Final).unwrap();
