@@ -1,3 +1,5 @@
+use std::ops::RangeInclusive;
+
 use anyhow::Result;
 
 pub enum Fit {
@@ -30,7 +32,8 @@ pub enum Order {
 /// 上限不超过下限体积的这个倍数时，答案多半贴着下限，倍增比二分省。经验值，样本有限。
 const GALLOP_RATIO: f64 = 3.0;
 
-/// 估算体积在上限的这个倍数以内，才值得用定稿档位复测。PNG 有损的估算通常比定稿大不到 20%。
+/// 估算体积按实测比例折算后仍在上限的这个倍数以内，才值得用定稿档位复测。
+/// 同一张图上，估算比定稿大出的比例在不同质量之间的出入实测约 25%。经验值，样本有限。
 const RETEST_MARGIN: f64 = 1.3;
 
 /// 在 [lo, hi] 中找输出不超过 `cap` 字节的最高质量。
@@ -107,27 +110,25 @@ pub fn climb(
     }
 }
 
-/// 按定稿档位从高到低复测 `top` 和 `top - 1`，返回第一个不超限的。
+/// 按定稿档位从高到低复测 `candidates` 里的质量，返回第一个不超限的。
 ///
 /// 体积随质量不一定单调（调色板图在低质量时抖动反而更大），估算又偏大，搜索可能把
-/// 最高的两个质量误判为超限，而 [`climb`] 从低处倍增爬不过中间的高峰。只测不低于
-/// `floor`、高于 `above`、且估算不超过 `cap × RETEST_MARGIN` 的质量；没试探过的
-/// 质量借用试探过的最近更高质量的估算。`encode` 应按定稿档位编码。
+/// 最高的质量误判为超限，而 [`climb`] 从低处倍增爬不过中间的高峰。只测高于 `above`、
+/// 且估算不超过 `cap × RETEST_MARGIN` 的质量；没试探过的质量借用试探过的最近更高
+/// 质量的估算。`encode` 应按定稿档位编码。
+///
+/// 估算偏大多少因图而异（照片 2% 左右，色块图可达一倍以上），所以先除以 `gap`
+/// 再比较：它是这张图上已经定稿的那个质量的估算体积与定稿体积之比。
 pub fn retest_top(
-    top: u8,
-    floor: u8,
+    candidates: RangeInclusive<u8>,
     above: Option<u8>,
     cap: u64,
+    gap: f64,
     probes: &[(u8, usize)],
     mut encode: impl FnMut(u8) -> Result<Vec<u8>>,
 ) -> Result<Option<(u8, Vec<u8>)>> {
-    let candidates = if top > floor {
-        vec![top, top - 1]
-    } else {
-        vec![top]
-    };
-    for q in candidates {
-        if q < floor || above.is_some_and(|a| q <= a) {
+    for q in candidates.rev() {
+        if above.is_some_and(|a| q <= a) {
             continue;
         }
         let estimate = probes
@@ -136,7 +137,7 @@ pub fn retest_top(
             .filter(|(p, _)| *p >= q)
             .min_by_key(|(p, _)| *p)
             .map(|&(_, size)| size);
-        if estimate.is_none_or(|size| size as f64 > cap as f64 * RETEST_MARGIN) {
+        if estimate.is_none_or(|size| size as f64 / gap > cap as f64 * RETEST_MARGIN) {
             continue;
         }
         let data = encode(q)?;
@@ -470,7 +471,7 @@ mod tests {
         assert_eq!(q, 3, "倍增在 q4 撞上高峰就停");
 
         let mut tries = 0;
-        let hit = retest_top(100, 1, Some(q), cap, &r.probes, |q| {
+        let hit = retest_top(99..=100, Some(q), cap, 1.0, &r.probes, |q| {
             tries += 1;
             Ok(u_final(q))
         })
@@ -482,18 +483,41 @@ mod tests {
     #[test]
     fn retest_prefers_lossless_when_it_fits() {
         let probes = [(100, 8_606), (99, 8_592)];
-        let hit = retest_top(100, 1, Some(99), 7_680, &probes, |q| Ok(u_final(q))).unwrap();
+        let hit = retest_top(99..=100, Some(99), 7_680, 1.0, &probes, |q| Ok(u_final(q))).unwrap();
         assert_eq!(hit.map(|(q, _)| q), Some(100));
     }
 
     #[test]
     fn retest_skips_estimates_far_above_cap() {
         let probes = [(100, 50_000), (99, 20_000)];
-        let hit = retest_top(100, 1, None, 7_168, &probes, |_| -> Result<Vec<u8>> {
-            panic!("估算远超上限，不该编码")
-        })
+        let hit = retest_top(
+            99..=100,
+            None,
+            7_168,
+            1.0,
+            &probes,
+            |_| -> Result<Vec<u8>> { panic!("估算远超上限，不该编码") },
+        )
         .unwrap();
         assert!(hit.is_none());
+    }
+
+    #[test]
+    fn retest_scales_estimates_by_measured_gap() {
+        // 估算比定稿大 50%，超出了 RETEST_MARGIN：不知道这个比例时不值得测，知道了就该测
+        let probes = [(100, 10_758), (99, 10_740)];
+        let hit = retest_top(
+            99..=100,
+            None,
+            7_168,
+            1.0,
+            &probes,
+            |_| -> Result<Vec<u8>> { panic!("估算远超上限，不该编码") },
+        )
+        .unwrap();
+        assert!(hit.is_none());
+        let hit = retest_top(99..=100, None, 7_168, 1.5, &probes, |q| Ok(u_final(q))).unwrap();
+        assert_eq!(hit.map(|(q, _)| q), Some(99));
     }
 
     #[test]
@@ -501,7 +525,7 @@ mod tests {
         // 不并行时 q99 可能没试过，借用 q100 的估算
         let probes = [(100, 8_606), (1, 8_146)];
         let mut tested = Vec::new();
-        let hit = retest_top(100, 1, None, 7_168, &probes, |q| {
+        let hit = retest_top(99..=100, None, 7_168, 1.0, &probes, |q| {
             tested.push(q);
             Ok(u_final(q))
         })
@@ -511,13 +535,18 @@ mod tests {
     }
 
     #[test]
-    fn retest_respects_floor_and_above() {
+    fn retest_respects_candidates_and_above() {
         let probes = [(100, 7_000)];
-        let hit = retest_top(100, 100, None, 7_168, &probes, |q| Ok(u_final(q))).unwrap();
-        assert!(hit.is_none(), "下限 100 时不测 q99，q100 本身 7172 超限");
-        let hit = retest_top(100, 1, Some(100), 10_000, &probes, |_| -> Result<Vec<u8>> {
-            panic!("已经是最高质量，不该复测")
-        })
+        let hit = retest_top(100..=100, None, 7_168, 1.0, &probes, |q| Ok(u_final(q))).unwrap();
+        assert!(hit.is_none(), "只给了 q100 就不测 q99，q100 本身 7172 超限");
+        let hit = retest_top(
+            99..=100,
+            Some(100),
+            10_000,
+            1.0,
+            &probes,
+            |_| -> Result<Vec<u8>> { panic!("已经是最高质量，不该复测") },
+        )
         .unwrap();
         assert!(hit.is_none());
     }

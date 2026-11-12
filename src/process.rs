@@ -154,17 +154,22 @@ fn fit_to_cap(
     // JPEG、WebP 的估算就是定稿体积，不必复测
     let mut top = None;
     if is_png {
-        // 无损在搜索时已有定论，有损区间只复测最高的 99
-        let (retest, floor) = if split {
-            (99, min_quality.max(99))
-        } else {
-            (ceiling, min_quality)
-        };
+        // 无损在搜索时已有定论，只复测有损里最高的 99；上限本身有损时复测它和下面一档
+        let lowest = if split { 99 } else { ceiling.saturating_sub(1) };
+        let candidates = lowest.max(min_quality)..=ceiling.min(99);
+        let gap = searched_len as f64 / data.len() as f64;
         let mut retests = 0;
-        top = retest_top(retest, floor, fits.then_some(quality), cap, &probes, |q| {
-            retests += 1;
-            encoder.encode(q, Effort::Final)
-        })?;
+        top = retest_top(
+            candidates,
+            fits.then_some(quality),
+            cap,
+            gap,
+            &probes,
+            |q| {
+                retests += 1;
+                encoder.encode(q, Effort::Final)
+            },
+        )?;
         report.tries += retests;
     }
     match top {
