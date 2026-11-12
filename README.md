@@ -1,12 +1,10 @@
 # sqz
 
-纯 Rust 实现的图片压缩工具。输入 PNG、JPEG、HEIC、WebP，默认输出与输入同格式（HEIC 转成 JPEG），也可以转成 JPEG、PNG 或 WebP。可以指定质量，也可以只给文件大小上限，由工具反推质量。默认参数参考 [Squoosh](https://github.com/GoogleChromeLabs/squoosh)。
+纯 Rust 实现的图片压缩工具，支持 PNG、JPEG、HEIC、WebP，默认参数参考 [Squoosh](https://github.com/GoogleChromeLabs/squoosh)。
 
 ## 安装
 
-从 [Releases](../../releases) 下载 Windows x64 版本，解压后把 `sqz.exe` 放进 `PATH`。
-
-也可以用 cargo 安装：
+从 [Releases](../../releases) 下载 Windows x64 版本，把 `sqz.exe` 放进 `PATH`；或者用 cargo 安装：
 
 ```shell
 cargo install --git https://github.com/genskyff/sqz --locked
@@ -25,36 +23,18 @@ sqz a.png b.heic -s 300KB --json         # 输出 JSON
 
 完整参数见 `sqz --help`。
 
-## 说明
-
-- `-s` 会搜索不超过上限的最高质量；除非加 `--best-effort`，输出一定不超过上限
-- PNG 降质靠减少颜色，照片类图片压不到目标大小时改用 `-f jpg`
-- EXIF、XMP、ICC 默认保留；方向会应用到像素上，EXIF 和 XMP 里的方向重置为正常、像素尺寸改为输出尺寸，XMP 里的 MWG 区域标注（人脸、对焦框）随像素一起转
-
 ## JSON 输出
 
-`--json` 输出一个数组，每个输入一项，没有值的字段会省略：
+`--json` 输出一个数组，每个输入一项，没有值的字段省略：`input`、`output`、`status`、`format`、`width`、`height`、`input_bytes`、`output_bytes`、`quality`、`dither`、`tries`、`error`、`elapsed_ms`。
 
-| 字段 | 说明 |
-|---|---|
-| `input`、`output` | 路径 |
-| `status` | `ok`、`kept_original`、`best_effort`、`size_unreachable`、`error` |
-| `format` | `jpeg`、`png` 或 `webp` |
-| `width`、`height` | 尺寸 |
-| `input_bytes`、`output_bytes` | 字节数；`size_unreachable` 时是能压到的最小值，文件不会写出 |
-| `quality`、`dither` | 最终使用的参数 |
-| `tries` | 编码次数 |
-| `error` | 错误信息 |
-| `elapsed_ms` | 耗时 |
+- `status`：`ok`、`kept_original`、`best_effort`、`size_unreachable`、`error`
+- `size_unreachable` 时不写文件，`output_bytes` 是能压到的最小值
+- 退出码：0 成功，1 有文件失败或达不到大小上限，2 参数错误
 
-退出码：0 成功，1 有文件失败或达不到大小上限，2 参数错误。
+## 说明
 
-## 限制
-
+- EXIF、XMP、ICC 默认保留；方向会应用到像素上，元数据里的方向、尺寸和 MWG 区域标注随之更新
+- 输出 JPEG 时，超过 64KB 的 EXIF 或 XMP 会被丢弃
 - HEIC 只取主图的 8-bit 画面，HDR 增益图会丢弃
 - HEIC 没有 ICC、只用 nclx 标注 Display P3 时，颜色会偏淡
 - 16-bit PNG 会降为 8-bit
-- 不支持动图 WebP
-- 输出 JPEG 时，超过 64KB 的 EXIF 或 XMP 会被丢弃（JPEG 单个段放不下）
-- 只换算 MWG 格式的区域标注，微软（MP）、ACDSee 等私有格式的区域不随转正调整
-- 源文件里区域本来就没随转正更新的（记录的尺寸横竖颠倒，常见于 iOS 编辑过的照片），无从得知原方向，原样保留
