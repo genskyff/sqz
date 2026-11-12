@@ -359,9 +359,13 @@ fn compress(raster: &Raster, best_within: Option<usize>) -> Vec<u8> {
     } else {
         &ALL_FILTERS
     };
-    let (best_filter, trial) = filters
+    let (filtered, trial) = filters
         .par_iter()
-        .map(|&f| (f, zlib(&apply_filter(raster, f), PROBE_LEVEL)))
+        .map(|&f| {
+            let filtered = apply_filter(raster, f);
+            let trial = zlib(&filtered, PROBE_LEVEL);
+            (filtered, trial)
+        })
         .min_by_key(|(_, z)| z.len())
         .expect("至少有一个滤波策略");
     let Some(limit) = best_within else {
@@ -372,7 +376,7 @@ fn compress(raster: &Raster, best_within: Option<usize>) -> Vec<u8> {
         return trial;
     }
     let limit = limit.min(trial.len() - 1);
-    zlib_within(&apply_filter(raster, best_filter), BEST_LEVEL, limit).unwrap_or(trial)
+    zlib_within(&filtered, BEST_LEVEL, limit).unwrap_or(trial)
 }
 
 fn apply_filter(raster: &Raster, filter: Filter) -> Vec<u8> {
@@ -420,17 +424,32 @@ fn apply_filter(raster: &Raster, filter: Filter) -> Vec<u8> {
 }
 
 fn filter_row(t: u8, row: &[u8], prev: &[u8], bpp: usize, out: &mut [u8]) {
-    for i in 0..row.len() {
-        let left = if i >= bpp { row[i - bpp] } else { 0 };
-        let up = prev[i];
+    // 开头 bpp 个字节左边没有像素；分开处理，主循环没有分支才能向量化
+    for i in 0..bpp {
         let predicted = match t {
-            0 => 0,
-            1 => left,
-            2 => up,
-            3 => ((u16::from(left) + u16::from(up)) / 2) as u8,
-            _ => paeth(left, up, if i >= bpp { prev[i - bpp] } else { 0 }),
+            0 | 1 => 0,
+            3 => prev[i] / 2,
+            _ => prev[i],
         };
         out[i] = row[i].wrapping_sub(predicted);
+    }
+    // row、prev 从头对齐，就是左侧和左上的像素
+    let body = out[bpp..]
+        .iter_mut()
+        .zip(&row[bpp..])
+        .zip(&prev[bpp..])
+        .zip(row)
+        .zip(prev);
+    match t {
+        0 => body.for_each(|((((o, &x), _), _), _)| *o = x),
+        1 => body.for_each(|((((o, &x), _), &left), _)| *o = x.wrapping_sub(left)),
+        2 => body.for_each(|((((o, &x), &up), _), _)| *o = x.wrapping_sub(up)),
+        3 => body.for_each(|((((o, &x), &up), &left), _)| {
+            *o = x.wrapping_sub(((u16::from(left) + u16::from(up)) / 2) as u8)
+        }),
+        _ => body.for_each(|((((o, &x), &up), &left), &upper_left)| {
+            *o = x.wrapping_sub(paeth(left, up, upper_left))
+        }),
     }
 }
 
