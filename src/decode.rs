@@ -52,6 +52,7 @@ impl Decoded {
     }
 
     /// 长边超过 `max_edge` 时等比缩小，元数据里的尺寸跟着改；返回缩小前的尺寸
+    #[cfg_attr(feature = "hotpath", hotpath::measure)]
     pub fn shrink_to_edge(&mut self, max_edge: u32) -> Option<(u32, u32)> {
         let source = (self.width, self.height);
         let long = self.width.max(self.height);
@@ -196,6 +197,7 @@ pub fn sniff(data: &[u8]) -> Option<InputFormat> {
     None
 }
 
+#[cfg_attr(feature = "hotpath", hotpath::measure)]
 pub fn decode(data: &[u8]) -> Result<Decoded> {
     match sniff(data) {
         Some(InputFormat::Png) => decode_with_image(data, ImageFormat::Png),

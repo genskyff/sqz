@@ -31,3 +31,11 @@ sqz shot.png --convert-only -f webp      # 只转格式不降质，输出无损 
 - HEIC 没有 ICC、只用 nclx 标注 Display P3 时，颜色会偏淡
 - 16-bit PNG 会降为 8-bit
 - 退出码：0 成功，1 有文件失败或达不到大小上限，2 参数错误
+
+## 性能分析
+
+带 `hotpath` feature 构建，运行结束时会打印各环节的耗时（[hotpath](https://github.com/hotpath-rs/hotpath)）：
+
+```shell
+cargo run --release --features hotpath -- photo.jpg -e 1600 -f webp
+```

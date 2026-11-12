@@ -28,6 +28,7 @@ fn encode_all(
     }
 }
 
+#[cfg_attr(feature = "hotpath", hotpath::measure)]
 pub fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Result<()> {
     let original = fs::read(input).context("读取失败")?;
     report.input_bytes = Some(original.len() as u64);
@@ -92,6 +93,7 @@ pub fn process(cli: &Cli, input: &Path, plan: &Plan, report: &mut Report) -> Res
     Ok(())
 }
 
+#[cfg_attr(feature = "hotpath", hotpath::measure)]
 fn fit_to_cap(
     cli: &Cli,
     format: OutputFormat,
@@ -224,6 +226,7 @@ fn fit_to_cap(
     Ok((data, status))
 }
 
+#[cfg_attr(feature = "hotpath", hotpath::measure)]
 fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
         fs::create_dir_all(dir).with_context(|| format!("无法创建目录 {}", dir.display()))?;

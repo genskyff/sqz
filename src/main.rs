@@ -20,6 +20,7 @@ use plan::{Plan, expand_inputs, explicit_format, path_key, plan};
 use process::process;
 use report::{Report, print_reports};
 
+#[cfg_attr(feature = "hotpath", hotpath::main)]
 fn main() -> ExitCode {
     let mut cli = Cli::parse();
     cli.inputs = expand_inputs(&cli.inputs);

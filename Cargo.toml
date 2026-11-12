@@ -12,11 +12,15 @@ crc32fast = "1.5.5"
 flate2 = { version = "1.1", default-features = false, features = ["zlib-rs"] }
 glob = "0.3.4"
 heic = { version = "0.1.6", features = ["parallel"] }
+hotpath = { version = "0.31.2", optional = true }
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }
 imagequant = "4.4.1"
 rayon = "1.12.0"
 zenjpeg = { version = "0.8.4", default-features = false, features = ["parallel", "yuv"] }
 zenwebp = "0.4.6"
+
+[features]
+hotpath = ["dep:hotpath", "hotpath/hotpath"]
 
 [profile.release]
 debug = "line-tables-only"

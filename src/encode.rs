@@ -70,6 +70,7 @@ pub enum Encoder<'a> {
     Webp(WebpJob<'a>),
 }
 
+#[cfg_attr(feature = "hotpath", hotpath::measure_all)]
 impl<'a> Encoder<'a> {
     pub fn new(
         format: OutputFormat,
